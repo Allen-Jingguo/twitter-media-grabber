@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>Twitter/X Media Grabber</title>
+</head>
+<body>
+  <h1>Twitter/X 媒体抓取</h1>
+
+  <section id="status" class="card">
+    <div class="row"><span>页面视频</span><b id="st-videos">–</b></div>
+    <div class="row"><span>已发现播放列表</span><b id="st-masters">–</b></div>
+    <div class="row"><span>已捕获字幕段</span><b id="st-vtt">–</b></div>
+  </section>
+
+  <section class="card">
+    <h2>字幕 / 文本</h2>
+    <label class="fmt">格式
+      <select id="sub-format">
+        <option value="srt">SRT (.srt)</option>
+        <option value="vtt">WebVTT (.vtt)</option>
+        <option value="txt">纯文本 (.txt)</option>
+      </select>
+    </label>
+    <button id="btn-subs" class="primary">抓取并下载字幕</button>
+  </section>
+
+  <section class="card">
+    <h2>音频</h2>
+    <button id="btn-audio-start" class="primary">开始录制音频</button>
+    <button id="btn-audio-stop" class="danger" disabled>停止并下载</button>
+  </section>
+
+  <p id="msg" class="msg"></p>
+
+  <details class="help">
+    <summary>使用说明</summary>
+    <ol>
+      <li>在 twitter.com / x.com 打开包含视频的推文并 <b>播放</b>。</li>
+      <li>抓字幕：先在播放器里开启 <b>CC 字幕</b>，播放几秒后点“抓取并下载字幕”。</li>
+      <li>录音频：视频播放中点“开始录制”，需要的片段播完后点“停止并下载”。</li>
+    </ol>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>
