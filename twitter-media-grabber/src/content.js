@@ -9,12 +9,16 @@
 
   var Vtt = self.TMGVtt;
   var M3u8 = self.TMGM3u8;
+  var T = self.TMGTranscript;
 
   var state = {
     masterPlaylists: {},   // url -> text
     vttSegments: {},       // url -> text (passively captured)
     recorder: null,
-    recording: false
+    recording: false,
+    transcribe: false,     // convert recorded audio to text after stop?
+    lang: 'auto',
+    transcribeStatus: ''   // '', 'pending', 'working: ...', 'done: ...', 'error: ...'
   };
 
   // ---- receive discoveries from the MAIN-world interceptor ------------------
@@ -132,7 +136,8 @@
     return '';
   }
 
-  function startAudio() {
+  function startAudio(opts) {
+    opts = opts || {};
     if (state.recording) return { ok: false, error: '已经在录制中。' };
     var video = pickVideo();
     if (!video) return { ok: false, error: '页面上没有找到视频。请先播放一个视频。' };
@@ -169,6 +174,7 @@
       downloadBlob(blob, 'twitter-audio-' + tsName() + '.' + ext);
       state.recording = false;
       state.recorder = null;
+      if (state.transcribe) sendForTranscription(blob, type);
     };
     try {
       rec.start();
@@ -177,7 +183,41 @@
     }
     state.recorder = rec;
     state.recording = true;
+    state.transcribe = !!opts.transcribe;
+    state.lang = opts.lang || 'auto';
+    state.transcribeStatus = state.transcribe ? 'pending' : '';
     return { ok: true, mime: rec.mimeType || mime };
+  }
+
+  // ---- speech-to-text (runs in the extension's offscreen document) ----------
+  function sendForTranscription(blob, mime) {
+    state.transcribeStatus = 'working: 准备音频…';
+    blob.arrayBuffer().then(function (buf) {
+      return chrome.runtime.sendMessage({
+        type: 'transcribe-audio',
+        b64: T.u8ToBase64(new Uint8Array(buf)),
+        mime: mime,
+        lang: state.lang
+      });
+    }).catch(function (e) {
+      state.transcribeStatus = 'error: ' + String((e && e.message) || e);
+    });
+  }
+
+  function onTranscribeResult(msg) {
+    if (!msg.ok) {
+      state.transcribeStatus = 'error: ' + (msg.error || '未知错误');
+      return;
+    }
+    if (!msg.text && !(msg.chunks && msg.chunks.length)) {
+      state.transcribeStatus = 'error: 未识别出任何文字';
+      return;
+    }
+    var name = 'twitter-transcript-' + tsName();
+    downloadText(msg.text || '', name + '.txt', 'text/plain');
+    var cues = T.whisperChunksToCues(msg.chunks, msg.durationMs);
+    if (cues.length) downloadText(Vtt.toSrt(cues), name + '.srt', 'application/x-subrip');
+    state.transcribeStatus = 'done: ' + (msg.text || '').length + ' 字符，' + cues.length + ' 条时间轴';
   }
 
   function stopAudio() {
@@ -215,9 +255,26 @@
         videos: listVideos().length,
         masters: Object.keys(state.masterPlaylists).length,
         vttSegments: Object.keys(state.vttSegments).length,
-        recording: state.recording
+        recording: state.recording,
+        transcribeStatus: state.transcribeStatus
       });
       return true;
+    }
+
+    if (msg.type === 'transcribe-progress') {
+      var stages = {
+        'decoding': '解码音频…',
+        'loading-model': '加载语音模型…',
+        'downloading-model': '下载模型 ' + (msg.detail || ''),
+        'transcribing': '识别中…'
+      };
+      state.transcribeStatus = 'working: ' + (stages[msg.stage] || msg.stage);
+      return;
+    }
+
+    if (msg.type === 'transcribe-result') {
+      onTranscribeResult(msg);
+      return;
     }
 
     if (msg.type === 'grab-subtitles') {
@@ -238,7 +295,7 @@
     }
 
     if (msg.type === 'start-audio') {
-      sendResponse(startAudio());
+      sendResponse(startAudio({ transcribe: msg.transcribe, lang: msg.lang }));
       return true;
     }
 

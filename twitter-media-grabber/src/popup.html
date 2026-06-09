@@ -28,9 +28,22 @@
   </section>
 
   <section class="card">
-    <h2>音频</h2>
+    <h2>音频 / 转文字</h2>
+    <label class="chk">
+      <input type="checkbox" id="opt-transcribe" checked />
+      停止后转写为文字（本地 Whisper）
+    </label>
+    <label class="fmt">识别语言
+      <select id="opt-lang">
+        <option value="auto">自动检测</option>
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+      </select>
+    </label>
     <button id="btn-audio-start" class="primary">开始录制音频</button>
-    <button id="btn-audio-stop" class="danger" disabled>停止并下载</button>
+    <button id="btn-audio-stop" class="danger" disabled>停止 · 下载 · 转写</button>
+    <div id="st-transcribe" class="tstatus"></div>
   </section>
 
   <p id="msg" class="msg"></p>
@@ -40,7 +53,10 @@
     <ol>
       <li>在 twitter.com / x.com 打开包含视频的推文并 <b>播放</b>。</li>
       <li>抓字幕：先在播放器里开启 <b>CC 字幕</b>，播放几秒后点“抓取并下载字幕”。</li>
-      <li>录音频：视频播放中点“开始录制”，需要的片段播完后点“停止并下载”。</li>
+      <li>录音频：视频播放中点“开始录制”，需要的片段播完后点“停止”。</li>
+      <li>转文字：勾选“转写为文字”后，停止录制会在本地用 Whisper 识别，
+          完成后自动下载 <b>.txt</b>（全文）和 <b>.srt</b>（带时间轴）。
+          首次使用需下载约 40MB 模型，请耐心等待。</li>
     </ol>
   </details>
 

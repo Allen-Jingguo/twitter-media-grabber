@@ -31,6 +31,24 @@ function send(tabId, msg) {
   });
 }
 
+function renderTranscribeStatus(st) {
+  var el = $('st-transcribe');
+  st = st || '';
+  el.className = 'tstatus';
+  if (!st) { el.textContent = ''; return; }
+  if (st.indexOf('error:') === 0) {
+    el.classList.add('err');
+    el.textContent = '转写失败：' + st.slice(6).trim();
+  } else if (st.indexOf('done:') === 0) {
+    el.classList.add('done');
+    el.textContent = '转写完成：' + st.slice(5).trim() + '（.txt/.srt 已下载）';
+  } else if (st.indexOf('working:') === 0) {
+    el.textContent = '转写中：' + st.slice(8).trim();
+  } else {
+    el.textContent = '等待录制结束后开始转写…';
+  }
+}
+
 function refreshStatus() {
   activeTab().then(function (tab) {
     return send(tab.id, { type: 'status' });
@@ -42,8 +60,12 @@ function refreshStatus() {
     $('btn-audio-start').disabled = !!s.recording;
     $('btn-audio-stop').disabled = !s.recording;
     if (s.recording) setMsg('正在录制音频…', 'ok');
+    renderTranscribeStatus(s.transcribeStatus);
   }).catch(function (e) { setMsg(e.message, 'err'); });
 }
+
+// Keep the transcribe status live while the popup stays open.
+setInterval(refreshStatus, 1500);
 
 $('btn-subs').addEventListener('click', function () {
   var fmt = $('sub-format').value;
@@ -59,7 +81,11 @@ $('btn-subs').addEventListener('click', function () {
 $('btn-audio-start').addEventListener('click', function () {
   setMsg('正在启动录制…');
   activeTab().then(function (tab) {
-    return send(tab.id, { type: 'start-audio' });
+    return send(tab.id, {
+      type: 'start-audio',
+      transcribe: $('opt-transcribe').checked,
+      lang: $('opt-lang').value
+    });
   }).then(function (res) {
     if (res && res.ok) {
       setMsg('录制中… 完成后点“停止并下载”。', 'ok');

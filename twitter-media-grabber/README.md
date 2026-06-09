@@ -1,7 +1,9 @@
 # Twitter/X Media Grabber
 
 A Manifest V3 browser extension (Chrome / Edge / Brave) that grabs **subtitles
-(captions)** and **audio** from videos playing on `twitter.com` / `x.com`.
+(captions)** and **audio** from videos playing on `twitter.com` / `x.com`,
+and can **transcribe the captured audio to text locally** (Whisper via
+transformers.js — no cloud API, audio never leaves the browser).
 
 > For personal use with content you have the right to download. Respect
 > copyright and Twitter/X's Terms of Service.
@@ -14,7 +16,9 @@ Twitter/X plays video over **HLS**. The extension uses three cooperating parts:
 |------|-------|------|
 | `src/inject.js` | MAIN | Patches `fetch`/`XMLHttpRequest` to observe the player's own traffic and discover the master `.m3u8` playlist and rolling `.vtt` caption segments. |
 | `src/content.js` | ISOLATED | Receives those discoveries, captures `<video>` audio via `captureStream()` + `MediaRecorder`, actively fetches subtitle segments from the HLS playlist, merges/dedupes them, and triggers downloads. |
-| `src/popup.{html,js,css}` | — | UI: status, subtitle format picker, audio record/stop. |
+| `src/popup.{html,js,css}` | — | UI: status, subtitle format picker, audio record/stop, transcribe toggle + language. |
+| `src/background.js` | service worker | Creates the offscreen document and routes audio/result messages between tab and transcriber. |
+| `src/offscreen.html/.js` | offscreen | Decodes recorded audio (WebAudio), resamples to 16 kHz mono, runs Whisper (`onnx-community/whisper-tiny`, q8) via vendored transformers.js + ONNX WASM. |
 
 Subtitles are gathered from **three** sources and merged (de-duplicated, sorted):
 1. The live `<video>.textTracks` cues.
@@ -38,7 +42,13 @@ unit-tested in node.
    - **Subtitles:** turn on **CC** in the player, let it play a few seconds,
      pick a format (SRT / VTT / TXT) and click **抓取并下载字幕**.
    - **Audio:** click **开始录制音频** while the video plays, then
-     **停止并下载** when done. The file downloads as `.webm` (Opus).
+     **停止 · 下载 · 转写** when done. The file downloads as `.webm` (Opus).
+   - **Speech-to-text:** keep **停止后转写为文字** checked (pick a language or
+     leave auto). After recording stops, the audio is transcribed locally and
+     a `.txt` (full text) + `.srt` (timestamped) download automatically.
+     The first run downloads the Whisper model (~40 MB) from huggingface.co
+     and caches it; later runs are offline. For better quality, change
+     `MODEL_ID` in `src/offscreen.js` to `onnx-community/whisper-base`.
 
 ## Self-test
 
@@ -63,3 +73,8 @@ timestamp, merge and serialization logic.
   The popup surfaces a clear error in that case.
 - **Subtitles** only exist when the video actually ships a caption track.
 - Auto-generated/burned-in captions (pixels in the video) cannot be extracted.
+- **Transcription** uses `whisper-tiny` (fast, ~40 MB) by default; accuracy on
+  noisy audio or heavy accents is limited — switch to `whisper-base` if needed.
+  Inference is single-threaded WASM, expect roughly real-time speed on a
+  modern laptop. The ONNX runtime WASM (~25 MB) is vendored in `src/vendor/`
+  so the extension stays MV3-compliant (no remote code).

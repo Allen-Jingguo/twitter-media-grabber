@@ -4,7 +4,7 @@
   "description": "Browser extension to grab subtitles and audio from Twitter/X video playback.",
   "private": true,
   "scripts": {
-    "test:unit": "node test/vtt.test.js && node test/m3u8.test.js",
+    "test:unit": "node test/vtt.test.js && node test/m3u8.test.js && node test/transcript.test.js",
     "test:validate": "node test/validate.js",
     "test": "npm run test:validate && npm run test:unit"
   },
