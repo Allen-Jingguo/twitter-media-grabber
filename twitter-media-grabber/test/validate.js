@@ -54,6 +54,13 @@ if (manifest) {
   ok(worlds.indexOf('MAIN') !== -1 && worlds.indexOf('ISOLATED') !== -1,
     'content scripts declare both MAIN and ISOLATED worlds');
 
+  // Works on any site: every content script matches generic http/https.
+  var allGeneric = (manifest.content_scripts || []).every(function (c) {
+    return (c.matches || []).indexOf('https://*/*') !== -1 &&
+           (c.matches || []).indexOf('http://*/*') !== -1;
+  });
+  ok(allGeneric, 'content scripts match all http/https sites');
+
   // Transcription (offscreen + Whisper) requirements.
   ok((manifest.permissions || []).indexOf('offscreen') !== -1, 'has "offscreen" permission');
   var csp = (manifest.content_security_policy || {}).extension_pages || '';

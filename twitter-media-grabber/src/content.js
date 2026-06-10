@@ -171,7 +171,7 @@
       var type = rec.mimeType || mime || 'audio/webm';
       var blob = new Blob(chunks, { type: type });
       var ext = /ogg/.test(type) ? 'ogg' : /mp4/.test(type) ? 'm4a' : 'webm';
-      downloadBlob(blob, 'twitter-audio-' + tsName() + '.' + ext);
+      downloadBlob(blob, siteName() + '-audio-' + tsName() + '.' + ext);
       state.recording = false;
       state.recorder = null;
       if (state.transcribe) sendForTranscription(blob, type);
@@ -213,7 +213,7 @@
       state.transcribeStatus = 'error: 未识别出任何文字';
       return;
     }
-    var name = 'twitter-transcript-' + tsName();
+    var name = siteName() + '-transcript-' + tsName();
     downloadText(msg.text || '', name + '.txt', 'text/plain');
     var cues = T.whisperChunksToCues(msg.chunks, msg.durationMs);
     if (cues.length) downloadText(Vtt.toSrt(cues), name + '.srt', 'application/x-subrip');
@@ -244,6 +244,12 @@
 
   function tsName() {
     return new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  }
+
+  // Filename prefix derived from the current site, e.g. "x.com" -> "x.com".
+  function siteName() {
+    var host = (location.hostname || 'video').replace(/^www\./, '');
+    return host.replace(/[^a-zA-Z0-9.-]/g, '') || 'video';
   }
 
   // ---- popup messaging ------------------------------------------------------
@@ -284,7 +290,7 @@
           return;
         }
         var fmt = msg.format || 'srt';
-        var name = 'twitter-subtitles-' + tsName() + '.' + fmt;
+        var name = siteName() + '-subtitles-' + tsName() + '.' + fmt;
         var mime = fmt === 'vtt' ? 'text/vtt' : fmt === 'txt' ? 'text/plain' : 'application/x-subrip';
         downloadText(res[fmt] || res.srt, name, mime);
         sendResponse({ ok: true, count: res.count });

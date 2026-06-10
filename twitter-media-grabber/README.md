@@ -1,16 +1,17 @@
-# Twitter/X Media Grabber
+# Video Media Grabber
 
-A Manifest V3 browser extension (Chrome / Edge / Brave) that grabs **subtitles
-(captions)** and **audio** from videos playing on `twitter.com` / `x.com`,
-and can **transcribe the captured audio to text locally** (Whisper via
-transformers.js — no cloud API, audio never leaves the browser).
+A Manifest V3 browser extension (Chrome / Edge / Brave) that grabs **audio**
+and **subtitles (captions)** from videos playing on **any website** (works
+great on `twitter.com` / `x.com`), and can **transcribe the captured audio to
+text locally** (Whisper via transformers.js — no cloud API, audio never
+leaves the browser), saving the transcript to disk as `.txt` + `.srt`.
 
 > For personal use with content you have the right to download. Respect
-> copyright and Twitter/X's Terms of Service.
+> copyright and each site's Terms of Service.
 
 ## How it works
 
-Twitter/X plays video over **HLS**. The extension uses three cooperating parts:
+Most sites (including Twitter/X) play video over **HLS**. The extension's parts:
 
 | File | World | Role |
 |------|-------|------|
@@ -37,7 +38,7 @@ unit-tested in node.
 
 ## Usage
 
-1. Open a tweet with a video on `twitter.com` / `x.com` and **play** it.
+1. Open any page with a video (e.g. a tweet on `x.com`) and **play** it.
 2. Click the extension icon.
    - **Subtitles:** turn on **CC** in the player, let it play a few seconds,
      pick a format (SRT / VTT / TXT) and click **抓取并下载字幕**.
@@ -68,7 +69,7 @@ timestamp, merge and serialization logic.
 
 ## Limitations
 
-- **Audio** uses `captureStream()`; if Twitter's media CDN does not allow
+- **Audio** uses `captureStream()`; if the site's media CDN does not allow
   cross-origin reads for a given clip, `MediaRecorder` may refuse to record it.
   The popup surfaces a clear error in that case.
 - **Subtitles** only exist when the video actually ships a caption track.

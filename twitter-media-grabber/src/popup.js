@@ -13,8 +13,8 @@ function activeTab() {
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
       var tab = tabs && tabs[0];
       if (!tab) return reject(new Error('没有活动标签页'));
-      if (!/^https:\/\/(twitter\.com|x\.com)\//.test(tab.url || '')) {
-        return reject(new Error('请在 twitter.com 或 x.com 页面上使用本插件。'));
+      if (!/^https?:\/\//.test(tab.url || '')) {
+        return reject(new Error('请在普通网页（http/https）上使用本插件。'));
       }
       resolve(tab);
     });

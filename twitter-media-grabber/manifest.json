@@ -1,19 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "Twitter/X Media Grabber",
-  "version": "1.0.0",
-  "description": "Grab subtitles (captions) and audio from videos playing on twitter.com / x.com.",
+  "name": "Video Media Grabber",
+  "version": "1.1.0",
+  "description": "Grab audio, subtitles and local Whisper transcripts from videos playing on any website (optimized for twitter.com / x.com).",
   "permissions": ["activeTab", "scripting", "downloads", "offscreen"],
   "host_permissions": [
-    "https://twitter.com/*",
-    "https://x.com/*",
-    "https://*.twimg.com/*"
+    "http://*/*",
+    "https://*/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
   "action": {
-    "default_title": "Twitter/X Media Grabber",
+    "default_title": "Video Media Grabber",
     "default_popup": "src/popup.html"
   },
   "background": {
@@ -21,13 +20,13 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://twitter.com/*", "https://x.com/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["src/inject.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://twitter.com/*", "https://x.com/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["src/lib/vtt.js", "src/lib/m3u8.js", "src/lib/transcript.js", "src/content.js"],
       "run_at": "document_start",
       "world": "ISOLATED"
