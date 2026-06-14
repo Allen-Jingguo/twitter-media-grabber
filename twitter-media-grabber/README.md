@@ -32,6 +32,29 @@ unit-tested in node.
 
 ## Install (load unpacked)
 
+### One-line terminal install
+
+This clones the extension (if needed), builds the icons, and launches your
+Chrome/Edge/Brave/Chromium with it already loaded in an isolated profile:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Allen-Jingguo/Hello-World/claude/brave-euler-EeNza/twitter-media-grabber/install.sh)
+```
+
+Or if you already cloned the repo:
+
+```bash
+cd twitter-media-grabber && ./install.sh          # launch with the ext loaded
+./install.sh --print                              # just print manual steps
+```
+
+> A Chromium extension can't be *silently* registered into your normal browser
+> profile from the CLI — the browser requires confirmation. The script does the
+> next best thing: it opens a throwaway profile with the extension pre-loaded so
+> you can use it immediately, leaving your main profile untouched.
+
+### Manual
+
 1. `node tools/make-icons.js` (icons are also committed, so this is optional).
 2. Open `chrome://extensions`, enable **Developer mode**.
 3. **Load unpacked** → select the `twitter-media-grabber/` folder.
