@@ -53,6 +53,22 @@ button:disabled { opacity: .5; cursor: default; }
 .msg { min-height: 16px; margin: 4px 2px; font-size: 12px; }
 .msg.ok { color: #4ec97a; }
 .msg.err { color: #f4727c; }
+.hint { margin: 0 0 8px; color: #8b98a5; font-size: 12px; }
+.hint b { color: #cfd9e1; }
+.livebox {
+  margin-top: 8px;
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: #15202b;
+  border: 1px solid #38444d;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e7e9ea;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .help { margin-top: 4px; color: #8b98a5; font-size: 12px; }
 .help summary { cursor: pointer; }
 .help ol { padding-left: 18px; margin: 8px 0 0; }

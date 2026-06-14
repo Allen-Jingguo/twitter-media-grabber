@@ -59,6 +59,55 @@
     return u8;
   }
 
+  // Float32 [-1,1] PCM <-> Int16 PCM. Used to halve the size of the audio
+  // windows streamed from the page to the offscreen transcriber during live
+  // (real-time) transcription.
+  function floatToInt16(f32) {
+    var out = new Int16Array(f32.length);
+    for (var i = 0; i < f32.length; i++) {
+      var s = f32[i];
+      if (s > 1) s = 1; else if (s < -1) s = -1;
+      out[i] = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+    }
+    return out;
+  }
+
+  function int16ToFloat(i16) {
+    var out = new Float32Array(i16.length);
+    for (var i = 0; i < i16.length; i++) {
+      out[i] = i16[i] < 0 ? i16[i] / 0x8000 : i16[i] / 0x7fff;
+    }
+    return out;
+  }
+
+  // Shift every cue's start/end by deltaMs (used to map a live window's
+  // window-relative timestamps onto the absolute media timeline).
+  function shiftCues(cues, deltaMs) {
+    return (cues || []).map(function (c) {
+      return { start: c.start + deltaMs, end: c.end + deltaMs, text: c.text };
+    });
+  }
+
+  /*
+   * Live windows overlap each other, so consecutive windows re-emit cues for
+   * the shared audio. Keep only cues that begin at/after the running cursor
+   * (the end of the last accepted cue), and advance the cursor. `tolMs` lets a
+   * cue that starts slightly before the cursor (jitter in the overlap) through.
+   * Returns { cues: kept, cursorMs: newCursor }.
+   */
+  function dedupeCuesByCursor(cues, cursorMs, tolMs) {
+    tolMs = tolMs == null ? 250 : tolMs;
+    var kept = [];
+    var cur = cursorMs || 0;
+    (cues || []).forEach(function (c) {
+      if (c.start >= cur - tolMs) {
+        kept.push(c);
+        if (c.end > cur) cur = c.end;
+      }
+    });
+    return { cues: kept, cursorMs: cur };
+  }
+
   /*
    * Whisper pipelines return { text, chunks: [{ timestamp: [startSec, endSec|null], text }] }.
    * Convert to the cue shape ({start,end,text} in ms) used by TMGVtt.toSrt/toVtt.
@@ -98,6 +147,10 @@
     resampleLinear: resampleLinear,
     u8ToBase64: u8ToBase64,
     base64ToU8: base64ToU8,
+    floatToInt16: floatToInt16,
+    int16ToFloat: int16ToFloat,
+    shiftCues: shiftCues,
+    dedupeCuesByCursor: dedupeCuesByCursor,
     whisperChunksToCues: whisperChunksToCues
   };
 

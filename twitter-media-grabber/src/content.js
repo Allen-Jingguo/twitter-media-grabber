@@ -18,8 +18,14 @@
     recording: false,
     transcribe: false,     // convert recorded audio to text after stop?
     lang: 'auto',
-    transcribeStatus: ''   // '', 'pending', 'working: ...', 'done: ...', 'error: ...'
+    transcribeStatus: '',  // '', 'pending', 'working: ...', 'done: ...', 'error: ...'
+    live: null             // live (real-time) transcription session, see startLive()
   };
+
+  // Live transcription tuning: send an 8s window every ~5s (3s overlap) so
+  // Whisper has context on each side while text appears roughly every 5s.
+  var LIVE_WINDOW_SEC = 8;
+  var LIVE_HOP_SEC = 5;
 
   // ---- receive discoveries from the MAIN-world interceptor ------------------
   window.addEventListener('message', function (ev) {
@@ -226,6 +232,163 @@
     return { ok: true };
   }
 
+  // ---- live (real-time) transcription ---------------------------------------
+  // Continuously pull the playing video's audio through WebAudio, slice it into
+  // overlapping windows, and stream each window to the offscreen Whisper. Text
+  // flows back chunk-by-chunk and is appended live; on stop we save .txt/.srt.
+  function startLive(opts) {
+    opts = opts || {};
+    if (state.live) return { ok: false, error: '实时转写已在进行中。' };
+    if (state.recording) return { ok: false, error: '正在录制音频，请先停止。' };
+
+    var video = pickVideo();
+    if (!video) return { ok: false, error: '页面上没有找到视频。请先播放一个视频。' };
+    var capture = video.captureStream || video.mozCaptureStream;
+    if (!capture) return { ok: false, error: '当前浏览器不支持 captureStream。' };
+
+    var stream;
+    try { stream = capture.call(video); }
+    catch (e) { return { ok: false, error: '无法捕获媒体流：' + e.message }; }
+    var audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) {
+      return { ok: false, error: '该视频没有音轨，或音轨尚未就绪（请确保视频正在播放且未静音）。' };
+    }
+
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return { ok: false, error: '当前浏览器不支持 AudioContext。' };
+
+    var ac, source, proc, sink;
+    try {
+      ac = new AC();
+      source = ac.createMediaStreamSource(new MediaStream(audioTracks));
+      proc = ac.createScriptProcessor(4096, 1, 1);
+      // A zero-gain sink keeps the graph "pulling" audio (so onaudioprocess
+      // fires) without re-playing the captured sound through the speakers.
+      sink = ac.createGain();
+      sink.gain.value = 0;
+      source.connect(proc);
+      proc.connect(sink);
+      sink.connect(ac.destination);
+    } catch (e) {
+      try { if (ac) ac.close(); } catch (_) {}
+      return { ok: false, error: '无法初始化音频处理：' + e.message };
+    }
+
+    var rate = ac.sampleRate;
+    var winSamples = Math.round(LIVE_WINDOW_SEC * rate);
+    var hopSamples = Math.round(LIVE_HOP_SEC * rate);
+    var capacity = winSamples + 4096;
+    var buf = new Float32Array(capacity);
+    var filled = 0;        // valid samples currently buffered (<= capacity)
+    var totalSamples = 0;  // total samples seen since start
+    var sinceEmit = 0;     // samples since the last window was emitted
+    var seq = 0;
+
+    var live = {
+      ac: ac, source: source, proc: proc, sink: sink,
+      lang: opts.lang || 'auto',
+      cursorMs: 0,
+      cues: [],
+      text: '',
+      stopping: false,
+      windows: 0,
+      emit: emitWindow
+    };
+
+    function emitWindow(isFinal) {
+      var take = Math.min(filled, winSamples);
+      if (take < rate * 0.6) return; // <0.6s of audio: not worth a pass
+      var slice = buf.subarray(filled - take, filled);
+      var windowStartMs = Math.round((totalSamples - take) / rate * 1000);
+      var pcm16k = T.resampleLinear(slice, rate, 16000);
+      var i16 = T.floatToInt16(pcm16k);
+      live.windows++;
+      chrome.runtime.sendMessage({
+        type: 'transcribe-chunk',
+        seq: seq++,
+        b64: T.u8ToBase64(new Uint8Array(i16.buffer)),
+        sampleRate: 16000,
+        windowStartMs: windowStartMs,
+        windowDurationMs: Math.round(pcm16k.length / 16000 * 1000),
+        lang: live.lang,
+        final: !!isFinal
+      }).catch(function () {});
+    }
+
+    proc.onaudioprocess = function (e) {
+      var input = e.inputBuffer.getChannelData(0);
+      var n = input.length;
+      if (n >= capacity) {
+        buf.set(input.subarray(n - capacity, n), 0);
+        filled = capacity;
+      } else {
+        if (filled + n > capacity) {
+          var drop = filled + n - capacity;
+          buf.copyWithin(0, drop, filled);
+          filled -= drop;
+        }
+        buf.set(input, filled);
+        filled += n;
+      }
+      totalSamples += n;
+      sinceEmit += n;
+      if (sinceEmit >= hopSamples) {
+        sinceEmit = 0;
+        emitWindow(false);
+      }
+    };
+
+    state.live = live;
+    state.lang = live.lang;
+    state.transcribeStatus = 'live: 正在聆听…（首次需加载语音模型）';
+    return { ok: true };
+  }
+
+  function onLiveChunkResult(msg) {
+    var live = state.live;
+    if (!live) return;
+    if (!msg.ok) {
+      // Keep going on a single failed window, but surface the latest error.
+      state.transcribeStatus = 'live: 识别出错（' + (msg.error || '未知') + '），继续聆听…';
+      return;
+    }
+    var winCues = T.whisperChunksToCues(msg.chunks, msg.windowDurationMs);
+    var shifted = T.shiftCues(winCues, msg.windowStartMs || 0);
+    var res = T.dedupeCuesByCursor(shifted, live.cursorMs);
+    if (res.cues.length) {
+      live.cues = live.cues.concat(res.cues);
+      live.cursorMs = res.cursorMs;
+      var added = res.cues.map(function (c) { return c.text; }).join(' ');
+      live.text = live.text ? (live.text + ' ' + added) : added;
+    }
+    state.transcribeStatus = 'live: ' + (live.text || '（暂无文字）');
+  }
+
+  function stopLive() {
+    var live = state.live;
+    if (!live || live.stopping) return { ok: false, error: '当前没有实时转写任务。' };
+    live.stopping = true;
+    try { live.emit(true); } catch (e) {}          // flush the trailing window
+    try { live.proc.onaudioprocess = null; } catch (e) {}
+    try { live.proc.disconnect(); } catch (e) {}
+    try { live.source.disconnect(); } catch (e) {}
+    try { live.sink.disconnect(); } catch (e) {}
+    try { live.ac.close(); } catch (e) {}
+    state.transcribeStatus = 'live: 正在生成文件…';
+    // Give the last in-flight window(s) a moment to come back before saving.
+    setTimeout(function () {
+      var name = siteName() + '-live-transcript-' + tsName();
+      downloadText(live.text || '（未识别到文字）', name + '.txt', 'text/plain');
+      if (live.cues.length) {
+        downloadText(Vtt.toSrt(live.cues), name + '.srt', 'application/x-subrip');
+      }
+      state.transcribeStatus = 'done: 实时转写 ' + (live.text || '').length +
+        ' 字符，' + live.cues.length + ' 条字幕（.txt/.srt 已下载）';
+      state.live = null;
+    }, 4000);
+    return { ok: true };
+  }
+
   // ---- downloads ------------------------------------------------------------
   function downloadBlob(blob, filename) {
     var url = URL.createObjectURL(blob);
@@ -262,6 +425,8 @@
         masters: Object.keys(state.masterPlaylists).length,
         vttSegments: Object.keys(state.vttSegments).length,
         recording: state.recording,
+        live: !!state.live,
+        liveText: state.live ? state.live.text : '',
         transcribeStatus: state.transcribeStatus
       });
       return true;
@@ -283,10 +448,15 @@
       return;
     }
 
+    if (msg.type === 'transcribe-chunk-result') {
+      onLiveChunkResult(msg);
+      return;
+    }
+
     if (msg.type === 'grab-subtitles') {
       grabSubtitles().then(function (res) {
         if (!res.count) {
-          sendResponse({ ok: false, error: '未捕获到字幕。请在视频上开启字幕(CC)并播放一会，然后重试。' });
+          sendResponse({ ok: false, error: '未捕获到字幕轨。该视频可能没有字幕——可改用下方“实时转写”直接从声音生成字幕。' });
           return;
         }
         var fmt = msg.format || 'srt';
@@ -307,6 +477,16 @@
 
     if (msg.type === 'stop-audio') {
       sendResponse(stopAudio());
+      return true;
+    }
+
+    if (msg.type === 'start-live') {
+      sendResponse(startLive({ lang: msg.lang }));
+      return true;
+    }
+
+    if (msg.type === 'stop-live') {
+      sendResponse(stopLive());
       return true;
     }
   });

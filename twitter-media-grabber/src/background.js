@@ -49,7 +49,37 @@ chrome.runtime.onMessage.addListener(function (msg, sender) {
     return;
   }
 
-  if (msg.type === 'transcribe-progress' || msg.type === 'transcribe-result') {
+  // Live transcription: forward each audio window to the offscreen worker.
+  if (msg.type === 'transcribe-chunk') {
+    var chunkTab = sender.tab && sender.tab.id;
+    ensureOffscreen().then(function () {
+      return chrome.runtime.sendMessage({
+        type: 'offscreen-transcribe-chunk',
+        tabId: chunkTab,
+        seq: msg.seq,
+        b64: msg.b64,
+        sampleRate: msg.sampleRate,
+        windowStartMs: msg.windowStartMs,
+        windowDurationMs: msg.windowDurationMs,
+        lang: msg.lang,
+        final: msg.final
+      });
+    }).catch(function (e) {
+      if (chunkTab != null) {
+        chrome.tabs.sendMessage(chunkTab, {
+          type: 'transcribe-chunk-result',
+          ok: false,
+          seq: msg.seq,
+          error: '无法启动转写器：' + String((e && e.message) || e)
+        }).catch(function () {});
+      }
+    });
+    return;
+  }
+
+  if (msg.type === 'transcribe-progress' ||
+      msg.type === 'transcribe-result' ||
+      msg.type === 'transcribe-chunk-result') {
     if (msg.tabId != null) {
       chrome.tabs.sendMessage(msg.tabId, msg).catch(function () {});
     }

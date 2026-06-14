@@ -46,6 +46,15 @@
     <div id="st-transcribe" class="tstatus"></div>
   </section>
 
+  <section class="card">
+    <h2>实时转写（边播边出字）</h2>
+    <p class="hint">无需字幕轨，直接把正在播放的视频声音实时识别成文字，
+       停止后保存 <b>.txt</b> 与 <b>.srt</b> 字幕。</p>
+    <button id="btn-live-start" class="primary">开始实时转写</button>
+    <button id="btn-live-stop" class="danger" disabled>停止并保存</button>
+    <div id="live-box" class="livebox" hidden></div>
+  </section>
+
   <p id="msg" class="msg"></p>
 
   <details class="help">
@@ -57,6 +66,8 @@
       <li>转文字：勾选“转写为文字”后，停止录制会在本地用 Whisper 识别，
           完成后自动下载 <b>.txt</b>（全文）和 <b>.srt</b>（带时间轴）。
           首次使用需下载约 40MB 模型，请耐心等待。</li>
+      <li>实时转写：点“开始实时转写”，文字会随播放每隔几秒滚动出现；
+          点“停止并保存”后下载 .txt 和 .srt。适用于没有字幕的任意视频。</li>
     </ol>
   </details>
 

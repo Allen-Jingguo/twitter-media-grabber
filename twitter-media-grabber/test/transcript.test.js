@@ -89,6 +89,64 @@ H.test('whisperChunksToCues skips empty/invalid chunks', function (t) {
   t.ok(cues[0].end > cues[0].start, 'zero-length cue gets a minimum duration');
 });
 
+H.test('floatToInt16 / int16ToFloat round-trip within quantization error', function (t) {
+  var f = new Float32Array([0, 1, -1, 0.5, -0.5, 0.25, 2, -2]);
+  var i16 = T.floatToInt16(f);
+  t.equal(i16[1], 0x7fff, '+1.0 -> max');
+  t.equal(i16[2], -0x8000, '-1.0 -> min');
+  t.equal(i16[6], 0x7fff, '+2.0 clamps to max');
+  t.equal(i16[7], -0x8000, '-2.0 clamps to min');
+  var back = T.int16ToFloat(i16);
+  [0, 0.5, -0.5, 0.25].forEach(function (v, k) {
+    var idx = [0, 3, 4, 5][k];
+    t.ok(Math.abs(back[idx] - v) < 1e-3, 'sample ' + v + ' recovered');
+  });
+});
+
+H.test('int16 PCM survives base64 transport (live window path)', function (t) {
+  var f = new Float32Array(1000);
+  for (var i = 0; i < f.length; i++) f[i] = Math.sin(i / 7) * 0.8;
+  var i16 = T.floatToInt16(f);
+  var b64 = T.u8ToBase64(new Uint8Array(i16.buffer));
+  var got = new Int16Array(T.base64ToU8(b64).buffer);
+  t.equal(got.length, i16.length, 'sample count preserved');
+  for (var j = 0; j < i16.length; j += 97) t.ok(got[j] === i16[j], 'sample ' + j);
+});
+
+H.test('shiftCues offsets start/end onto the absolute timeline', function (t) {
+  var cues = T.shiftCues([{ start: 0, end: 500, text: 'a' }, { start: 500, end: 1000, text: 'b' }], 8000);
+  t.equal(cues, [
+    { start: 8000, end: 8500, text: 'a' },
+    { start: 8500, end: 9000, text: 'b' }
+  ]);
+});
+
+H.test('dedupeCuesByCursor drops overlap and advances the cursor', function (t) {
+  // First window produced cues up to 5000ms.
+  var first = T.dedupeCuesByCursor([
+    { start: 0, end: 2000, text: 'one' },
+    { start: 2000, end: 5000, text: 'two' }
+  ], 0);
+  t.equal(first.cursorMs, 5000);
+  t.equal(first.cues.length, 2);
+
+  // Next (overlapping) window re-emits 'two' plus new 'three'; only 'three' kept.
+  var second = T.dedupeCuesByCursor([
+    { start: 2000, end: 5000, text: 'two' },
+    { start: 5000, end: 7000, text: 'three' }
+  ], first.cursorMs);
+  t.equal(second.cues.length, 1);
+  t.equal(second.cues[0].text, 'three');
+  t.equal(second.cursorMs, 7000);
+});
+
+H.test('dedupeCuesByCursor tolerates small jitter before the cursor', function (t) {
+  var r = T.dedupeCuesByCursor([{ start: 4900, end: 6000, text: 'x' }], 5000);
+  t.equal(r.cues.length, 1, 'within 250ms tolerance is kept');
+  var r2 = T.dedupeCuesByCursor([{ start: 4000, end: 6000, text: 'y' }], 5000);
+  t.equal(r2.cues.length, 0, 'well before cursor is dropped');
+});
+
 H.test('cues from whisper render to valid SRT via TMGVtt', function (t) {
   var cues = T.whisperChunksToCues([
     { timestamp: [0, 1.5], text: '你好，世界' },

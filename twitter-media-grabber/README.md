@@ -2,9 +2,17 @@
 
 A Manifest V3 browser extension (Chrome / Edge / Brave) that grabs **audio**
 and **subtitles (captions)** from videos playing on **any website** (works
-great on `twitter.com` / `x.com`), and can **transcribe the captured audio to
-text locally** (Whisper via transformers.js — no cloud API, audio never
-leaves the browser), saving the transcript to disk as `.txt` + `.srt`.
+great on `twitter.com` / `x.com`), and can **transcribe speech to text
+locally** (Whisper via transformers.js — no cloud API, audio never leaves the
+browser), saving the transcript to disk as `.txt` + `.srt`.
+
+Two transcription modes:
+
+- **Record → transcribe:** record a clip, then transcribe the whole thing on
+  stop.
+- **Live (real-time) transcription:** text appears every few seconds *while the
+  video plays* — no caption track required, so it effectively **generates
+  subtitles for any video that has none**. Stop to save `.txt` + `.srt`.
 
 > For personal use with content you have the right to download. Respect
 > copyright and each site's Terms of Service.
@@ -16,10 +24,10 @@ Most sites (including Twitter/X) play video over **HLS**. The extension's parts:
 | File | World | Role |
 |------|-------|------|
 | `src/inject.js` | MAIN | Patches `fetch`/`XMLHttpRequest` to observe the player's own traffic and discover the master `.m3u8` playlist and rolling `.vtt` caption segments. |
-| `src/content.js` | ISOLATED | Receives those discoveries, captures `<video>` audio via `captureStream()` + `MediaRecorder`, actively fetches subtitle segments from the HLS playlist, merges/dedupes them, and triggers downloads. |
-| `src/popup.{html,js,css}` | — | UI: status, subtitle format picker, audio record/stop, transcribe toggle + language. |
-| `src/background.js` | service worker | Creates the offscreen document and routes audio/result messages between tab and transcriber. |
-| `src/offscreen.html/.js` | offscreen | Decodes recorded audio (WebAudio), resamples to 16 kHz mono, runs Whisper (`onnx-community/whisper-tiny`, q8) via vendored transformers.js + ONNX WASM. |
+| `src/content.js` | ISOLATED | Receives those discoveries, captures `<video>` audio (`captureStream()` + `MediaRecorder` for clips, `AudioContext`/`ScriptProcessor` for live windows), actively fetches subtitle segments from HLS, merges/dedupes, and triggers downloads. |
+| `src/popup.{html,js,css}` | — | UI: status, subtitle format picker, audio record/stop, transcribe toggle + language, and live-transcription start/stop with a streaming text box. |
+| `src/background.js` | service worker | Creates the offscreen document and routes audio / window / result messages between tab and transcriber. |
+| `src/offscreen.html/.js` | offscreen | Decodes audio (WebAudio), resamples to 16 kHz mono, runs Whisper (`onnx-community/whisper-tiny`, q8) via vendored transformers.js + ONNX WASM. Live windows are serialized on a queue so the pipeline runs one at a time. |
 
 Subtitles are gathered from **three** sources and merged (de-duplicated, sorted):
 1. The live `<video>.textTracks` cues.
@@ -27,8 +35,14 @@ Subtitles are gathered from **three** sources and merged (de-duplicated, sorted)
 3. An active walk of the HLS master → subtitle media playlist → all `.vtt`
    segments (so you get the *full* track, not just the played part).
 
-Pure parsing logic lives in `src/lib/vtt.js` and `src/lib/m3u8.js` so it can be
-unit-tested in node.
+**Live transcription** instead pulls the playing audio through WebAudio into
+overlapping ~8 s windows (5 s hop), resamples each to 16 kHz Int16 PCM, and
+streams it to the offscreen Whisper. Returned cues are mapped onto the absolute
+timeline (`shiftCues`) and de-overlapped with a running cursor
+(`dedupeCuesByCursor`) so the accumulated text/SRT has no duplicated regions.
+
+Pure parsing/audio logic lives in `src/lib/vtt.js`, `src/lib/m3u8.js` and
+`src/lib/transcript.js` so it can be unit-tested in node.
 
 ## Install (load unpacked)
 
