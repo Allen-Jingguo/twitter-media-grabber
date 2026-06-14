@@ -28,10 +28,9 @@
     live: null             // live (real-time) transcription session, see startLive()
   };
 
-  // Live transcription tuning: send an 8s window every ~5s (3s overlap) so
-  // Whisper has context on each side while text appears roughly every 5s.
-  var LIVE_WINDOW_SEC = 8;
-  var LIVE_HOP_SEC = 5;
+  // Live transcription: transcribe consecutive, non-overlapping ~6s windows so
+  // text appears every few seconds and concatenates cleanly (no overlap dedup).
+  var LIVE_WINDOW_SEC = 6;
 
   // ---- receive discoveries from the MAIN-world interceptor ------------------
   window.addEventListener('message', function (ev) {
@@ -284,20 +283,18 @@
 
     var rate = ac.sampleRate;
     var winSamples = Math.round(LIVE_WINDOW_SEC * rate);
-    var hopSamples = Math.round(LIVE_HOP_SEC * rate);
-    var firstSamples = Math.round(3 * rate); // emit a first window after ~3s
-    var capacity = winSamples + 4096;
-    var buf = new Float32Array(capacity);
-    var filled = 0;        // valid samples currently buffered (<= capacity)
-    var totalSamples = 0;  // total samples seen since start
-    var sinceEmit = 0;     // samples since the last window was emitted
+    var firstSamples = Math.round(3 * rate); // emit a first (partial) window after ~3s
+    var pending = [];        // FIFO of captured Float32 blocks awaiting a window
+    var pendingLen = 0;      // total samples queued in `pending`
+    var emittedSamples = 0;  // absolute samples already emitted (for timestamps)
+    var totalSamples = 0;    // total samples captured
+    var firstDone = false;
     var seq = 0;
 
     var live = {
       ac: ac, source: source, proc: proc, sink: sink,
       lang: opts.lang || 'auto',
       model: opts.model || state.model,
-      cursorMs: 0,
       cues: [],
       text: '',
       stopping: false,
@@ -305,15 +302,25 @@
       results: 0,      // results received back
       maxLevel: 0,     // peak |sample| seen (to detect silence)
       lastError: '',
-      emit: emitWindow
+      emit: flush
     };
 
-    function emitWindow(isFinal) {
-      var take = Math.min(filled, winSamples);
-      if (take < rate * 0.6) return; // <0.6s of audio: not worth a pass
-      var slice = buf.subarray(filled - take, filled);
-      var windowStartMs = Math.round((totalSamples - take) / rate * 1000);
-      var pcm16k = T.resampleLinear(slice, rate, 16000);
+    // Assemble `want` samples from the FIFO into one window and send it.
+    function drain(want) {
+      if (want <= 0 || pendingLen < want) return;
+      var win = new Float32Array(want);
+      var off = 0;
+      while (off < want && pending.length) {
+        var blk = pending[0];
+        var need = want - off;
+        if (blk.length <= need) { win.set(blk, off); off += blk.length; pending.shift(); }
+        else { win.set(blk.subarray(0, need), off); off += need; pending[0] = blk.subarray(need); }
+      }
+      pendingLen -= want;
+      var windowStartMs = Math.round(emittedSamples / rate * 1000);
+      emittedSamples += want;
+      var pcm16k = T.resampleLinear(win, rate, 16000);
+      if (pcm16k.length < 16000 * 0.3) return; // <0.3s, skip
       var i16 = T.floatToInt16(pcm16k);
       live.windows++;
       chrome.runtime.sendMessage({
@@ -324,38 +331,32 @@
         windowStartMs: windowStartMs,
         windowDurationMs: Math.round(pcm16k.length / 16000 * 1000),
         lang: live.lang,
-        model: live.model,
-        final: !!isFinal
+        model: live.model
       }).catch(function () {});
     }
+
+    // Flush whatever remains (called on stop).
+    function flush() { if (pendingLen > 0) drain(pendingLen); }
 
     proc.onaudioprocess = function (e) {
       var input = e.inputBuffer.getChannelData(0);
       var n = input.length;
+      var copy = new Float32Array(n);
+      copy.set(input);                       // inputBuffer is reused; copy it out
       // Track peak level so we can tell "silence" from "model failed" later.
       for (var k = 0; k < n; k += 64) {
-        var a = input[k] < 0 ? -input[k] : input[k];
+        var a = copy[k] < 0 ? -copy[k] : copy[k];
         if (a > live.maxLevel) live.maxLevel = a;
       }
-      if (n >= capacity) {
-        buf.set(input.subarray(n - capacity, n), 0);
-        filled = capacity;
-      } else {
-        if (filled + n > capacity) {
-          var drop = filled + n - capacity;
-          buf.copyWithin(0, drop, filled);
-          filled -= drop;
-        }
-        buf.set(input, filled);
-        filled += n;
-      }
+      pending.push(copy);
+      pendingLen += n;
       totalSamples += n;
-      sinceEmit += n;
-      var due = sinceEmit >= hopSamples || (live.windows === 0 && totalSamples >= firstSamples);
-      if (due) {
-        sinceEmit = 0;
-        emitWindow(false);
+      // First window early for snappier feedback, then full non-overlapping ones.
+      if (!firstDone && pendingLen >= firstSamples) {
+        firstDone = true;
+        drain(Math.min(pendingLen, winSamples));
       }
+      while (pendingLen >= winSamples) drain(winSamples);
     };
 
     state.live = live;
@@ -390,15 +391,18 @@
       state.transcribeStatus = 'live: 识别出错（' + live.lastError + '），继续聆听…';
       return;
     }
-    var winCues = T.whisperChunksToCues(msg.chunks, msg.windowDurationMs);
-    var shifted = T.shiftCues(winCues, msg.windowStartMs || 0);
-    var res = T.dedupeCuesByCursor(shifted, live.cursorMs);
-    if (res.cues.length) {
-      live.cues = live.cues.concat(res.cues);
-      live.cursorMs = res.cursorMs;
-      var added = res.cues.map(function (c) { return c.text; }).join(' ');
-      live.text = live.text ? (live.text + ' ' + added) : added;
+    // Windows are non-overlapping, so the recognized text is the source of truth
+    // (appended directly); chunks are used only to time-stamp the .srt. If a
+    // window yields text but no usable chunk timestamps, synthesize one cue so
+    // the text is never lost from either the live view or the subtitles.
+    var txt = String(msg.text || '').trim();
+    var winStart = msg.windowStartMs || 0;
+    var winCues = T.shiftCues(T.whisperChunksToCues(msg.chunks, msg.windowDurationMs), winStart);
+    if (!winCues.length && txt) {
+      winCues = [{ start: winStart, end: winStart + (msg.windowDurationMs || 2000), text: txt }];
     }
+    if (winCues.length) live.cues = live.cues.concat(winCues);
+    if (txt) live.text = live.text ? (live.text + ' ' + txt) : txt;
     state.transcribeStatus = 'live: ' + (live.text || '（聆听中，暂无文字…）');
   }
 
@@ -437,7 +441,8 @@
         var name = siteName() + '-live-transcript-' + tsName();
         downloadText(live.text, name + '.txt', 'text/plain');
         if (live.cues.length) {
-          downloadText(Vtt.toSrt(live.cues), name + '.srt', 'application/x-subrip');
+          var ordered = live.cues.slice().sort(function (a, b) { return a.start - b.start; });
+          downloadText(Vtt.toSrt(ordered), name + '.srt', 'application/x-subrip');
         }
         state.transcribeStatus = 'done: 实时转写 ' + live.text.length +
           ' 字符，' + live.cues.length + ' 条字幕（.txt/.srt 已下载）';
