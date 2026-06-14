@@ -31,14 +31,35 @@ ONNX_FILES=(encoder_model_quantized.onnx decoder_model_merged_quantized.onnx)
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Download with resume + retries. Re-running the script continues partial files
+# instead of restarting, and skips files that are already complete.
 fetch() {
   # fetch <url> <dest>
   local url="$1" dest="$2"
   mkdir -p "$(dirname "$dest")"
+
+  # Skip if we already have a non-empty file that matches the server's size.
+  if [ -s "$dest" ] && have curl; then
+    local remote
+    remote=$(curl -sIL --http1.1 "$url" 2>/dev/null \
+      | awk 'BEGIN{IGNORECASE=1}/^content-length:/{v=$2}END{gsub(/\r/,"",v);print v}')
+    local local_sz
+    local_sz=$(wc -c < "$dest" | tr -d ' ')
+    if [ -n "$remote" ] && [ "$remote" = "$local_sz" ]; then
+      echo "      (already complete, skipping)"
+      return 0
+    fi
+  fi
+
   if have curl; then
-    curl -L --fail --retry 3 -o "$dest" "$url"
+    # --http1.1 avoids the "HTTP/2 stream was not closed cleanly (CANCEL)"
+    # failures; -C - resumes; --retry-all-errors retries on network resets.
+    curl -L --fail --http1.1 -C - \
+      --retry 8 --retry-all-errors --retry-delay 3 \
+      --connect-timeout 30 \
+      -o "$dest" "$url"
   elif have wget; then
-    wget -q -O "$dest" "$url"
+    wget -c -q --tries=8 --timeout=30 -O "$dest" "$url"
   else
     echo "!! need curl or wget" >&2; exit 1
   fi

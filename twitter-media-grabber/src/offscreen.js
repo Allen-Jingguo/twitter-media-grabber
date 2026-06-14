@@ -19,7 +19,13 @@ const ALLOWED_MODELS = {
 };
 const TARGET_RATE = 16000;
 
-env.allowLocalModels = false;
+// Prefer models bundled in the extension (src/models/) for fully-offline use;
+// fall back to huggingface.co only if a chosen model wasn't downloaded locally.
+// Run ./use-local-models.sh after ./download-models.sh to populate src/models/.
+env.allowLocalModels = true;
+env.allowRemoteModels = true;
+env.localModelPath = chrome.runtime.getURL('src/models/');
+env.useBrowserCache = true;
 // Prefer the vendored ONNX wasm; if this env shape ever changes, ort falls
 // back to its default (CDN) wasm path, which our CSP also permits.
 const ortWasmEnv = env.backends && env.backends.onnx && env.backends.onnx.wasm;

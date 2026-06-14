@@ -73,6 +73,24 @@ cd twitter-media-grabber && ./install.sh          # launch with the ext loaded
 2. Open `chrome://extensions`, enable **Developer mode**.
 3. **Load unpacked** → select the `twitter-media-grabber/` folder.
 
+## Offline models (optional)
+
+By default the chosen Whisper model is downloaded from huggingface.co on first
+use and cached by the browser. To run **fully offline** (and avoid huggingface
+being slow/blocked), bundle the weights into the extension:
+
+```bash
+./download-models.sh base small        # or: base   /   tiny base small
+# (HF blocked? use a mirror: HF_ENDPOINT=https://hf-mirror.com ./download-models.sh base)
+./use-local-models.sh                  # moves models/ -> src/models/onnx-community/
+```
+
+Then reload the extension. `src/offscreen.js` sets `env.localModelPath` to
+`src/models/`, so a model present on disk loads locally (no network); models not
+downloaded still fall back to huggingface.co. The weights are git-ignored
+(hundreds of MB; some `.onnx` exceed GitHub's 100 MB file limit), so they live
+only in your local checkout.
+
 ## Usage
 
 1. Open any page with a video (e.g. a tweet on `x.com`) and **play** it.
