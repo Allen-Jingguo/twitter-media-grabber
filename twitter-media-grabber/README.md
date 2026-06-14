@@ -114,5 +114,14 @@ timestamp, merge and serialization logic.
 - **Transcription** uses `whisper-tiny` (fast, ~40 MB) by default; accuracy on
   noisy audio or heavy accents is limited — switch to `whisper-base` if needed.
   Inference is single-threaded WASM, expect roughly real-time speed on a
-  modern laptop. The ONNX runtime WASM (~25 MB) is vendored in `src/vendor/`
+  modern laptop. The ONNX runtime WASM backend is vendored in `src/vendor/`
   so the extension stays MV3-compliant (no remote code).
+
+> The vendored ONNX files **must match the onnxruntime-web version bundled in
+> `transformers.min.js`** (currently `1.24.3`) — the single-threaded path needs
+> `ort-wasm-simd-threaded.asyncify.{mjs,wasm}` and the SIMD path needs
+> `ort-wasm-simd-threaded.{mjs,wasm}`. `test/validate.js` parses the bundle and
+> asserts every referenced `ort-wasm*` file is present, so a mismatch (which
+> shows up at runtime as *"no available backend found / Failed to fetch
+> dynamically imported module"*) fails the test suite. To refresh them:
+> `npm pack onnxruntime-web@<version>` and copy those four files from `dist/`.

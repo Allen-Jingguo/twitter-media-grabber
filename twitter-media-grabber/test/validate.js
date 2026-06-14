@@ -66,10 +66,19 @@ if (manifest) {
   var csp = (manifest.content_security_policy || {}).extension_pages || '';
   ok(csp.indexOf('wasm-unsafe-eval') !== -1, "CSP allows 'wasm-unsafe-eval' (needed by onnxruntime)");
   ['src/offscreen.html', 'src/offscreen.js', 'src/lib/transcript.js',
-   'src/vendor/transformers.min.js',
-   'src/vendor/ort-wasm-simd-threaded.jsep.mjs',
-   'src/vendor/ort-wasm-simd-threaded.jsep.wasm'].forEach(function (rel) {
+   'src/vendor/transformers.min.js'].forEach(function (rel) {
     ok(fs.existsSync(path.join(root, rel)), 'transcriber file exists: ' + rel);
+  });
+
+  // The vendored onnxruntime WASM backend must include every ort-wasm file the
+  // bundled transformers.min.js can request, or inference dies at runtime with
+  // "no available backend found / Failed to fetch dynamically imported module".
+  var bundle = fs.readFileSync(path.join(root, 'src/vendor/transformers.min.js'), 'utf8');
+  var ortFiles = {};
+  (bundle.match(/ort-wasm[a-z0-9._-]*\.(?:mjs|wasm)/g) || []).forEach(function (f) { ortFiles[f] = true; });
+  ok(Object.keys(ortFiles).length > 0, 'transformers.min.js references ort-wasm backend files');
+  Object.keys(ortFiles).sort().forEach(function (f) {
+    ok(fs.existsSync(path.join(root, 'src/vendor', f)), 'vendored ORT backend present: ' + f);
   });
   var offscreenHtml = fs.readFileSync(path.join(root, 'src/offscreen.html'), 'utf8');
   ok(offscreenHtml.indexOf('lib/transcript.js') !== -1 && offscreenHtml.indexOf('offscreen.js') !== -1,
