@@ -107,8 +107,51 @@ async function transcribe(msg) {
   }
 }
 
+// Live transcription: each window is a short raw-PCM slice. Serialize them on
+// a single promise chain so the (non-reentrant) Whisper pipeline runs them one
+// at a time and results come back in order.
+let chunkQueue = Promise.resolve();
+
+async function transcribeChunk(msg) {
+  const tabId = msg.tabId;
+  try {
+    const i16 = new Int16Array(T.base64ToU8(msg.b64).buffer);
+    let pcm = T.int16ToFloat(i16);
+    if (msg.sampleRate && msg.sampleRate !== TARGET_RATE) {
+      pcm = T.resampleLinear(pcm, msg.sampleRate, TARGET_RATE);
+    }
+    if (!pcm.length) throw new Error('空音频窗口');
+
+    const asr = await getAsr(tabId);
+    const opts = { chunk_length_s: 30, return_timestamps: true, task: 'transcribe' };
+    if (msg.lang && msg.lang !== 'auto') opts.language = msg.lang;
+    const out = await asr(pcm, opts);
+
+    chrome.runtime.sendMessage({
+      type: 'transcribe-chunk-result',
+      tabId: tabId,
+      ok: true,
+      seq: msg.seq,
+      windowStartMs: msg.windowStartMs,
+      windowDurationMs: msg.windowDurationMs,
+      text: String(out.text || '').trim(),
+      chunks: out.chunks || []
+    }).catch(() => {});
+  } catch (e) {
+    chrome.runtime.sendMessage({
+      type: 'transcribe-chunk-result',
+      tabId: tabId,
+      ok: false,
+      seq: msg.seq,
+      error: String((e && e.message) || e)
+    }).catch(() => {});
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === 'offscreen-transcribe') {
     transcribe(msg);
+  } else if (msg && msg.type === 'offscreen-transcribe-chunk') {
+    chunkQueue = chunkQueue.then(() => transcribeChunk(msg)).catch(() => {});
   }
 });

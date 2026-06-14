@@ -49,6 +49,19 @@ function renderTranscribeStatus(st) {
   }
 }
 
+function renderLive(s) {
+  var box = $('live-box');
+  $('btn-live-start').disabled = !!s.live || !!s.recording;
+  $('btn-live-stop').disabled = !s.live;
+  if (s.live) {
+    box.hidden = false;
+    box.textContent = s.liveText || '正在聆听…（首次需加载语音模型，请稍候）';
+    box.scrollTop = box.scrollHeight;
+  } else if (!box.textContent) {
+    box.hidden = true;
+  }
+}
+
 function refreshStatus() {
   activeTab().then(function (tab) {
     return send(tab.id, { type: 'status' });
@@ -57,15 +70,17 @@ function refreshStatus() {
     $('st-videos').textContent = s.videos;
     $('st-masters').textContent = s.masters;
     $('st-vtt').textContent = s.vttSegments;
-    $('btn-audio-start').disabled = !!s.recording;
+    // While live transcription runs, the audio capture stream is busy.
+    $('btn-audio-start').disabled = !!s.recording || !!s.live;
     $('btn-audio-stop').disabled = !s.recording;
     if (s.recording) setMsg('正在录制音频…', 'ok');
+    renderLive(s);
     renderTranscribeStatus(s.transcribeStatus);
   }).catch(function (e) { setMsg(e.message, 'err'); });
 }
 
-// Keep the transcribe status live while the popup stays open.
-setInterval(refreshStatus, 1500);
+// Keep the transcribe status / live text fresh while the popup stays open.
+setInterval(refreshStatus, 1000);
 
 $('btn-subs').addEventListener('click', function () {
   var fmt = $('sub-format').value;
@@ -105,6 +120,36 @@ $('btn-audio-stop').addEventListener('click', function () {
       setMsg('已停止，音频文件正在下载。', 'ok');
       $('btn-audio-start').disabled = false;
       $('btn-audio-stop').disabled = true;
+    } else {
+      setMsg((res && res.error) || '停止失败。', 'err');
+    }
+  }).catch(function (e) { setMsg(e.message, 'err'); });
+});
+
+$('btn-live-start').addEventListener('click', function () {
+  setMsg('正在启动实时转写…');
+  $('live-box').hidden = false;
+  $('live-box').textContent = '正在聆听…（首次需加载语音模型，请稍候）';
+  activeTab().then(function (tab) {
+    return send(tab.id, { type: 'start-live', lang: $('opt-lang').value });
+  }).then(function (res) {
+    if (res && res.ok) {
+      setMsg('实时转写已开始，文字会随播放滚动出现。', 'ok');
+      $('btn-live-start').disabled = true;
+      $('btn-live-stop').disabled = false;
+    } else {
+      setMsg((res && res.error) || '无法开始实时转写。', 'err');
+    }
+  }).catch(function (e) { setMsg(e.message, 'err'); });
+});
+
+$('btn-live-stop').addEventListener('click', function () {
+  activeTab().then(function (tab) {
+    return send(tab.id, { type: 'stop-live' });
+  }).then(function (res) {
+    if (res && res.ok) {
+      setMsg('已停止，正在生成 .txt / .srt …', 'ok');
+      $('btn-live-stop').disabled = true;
     } else {
       setMsg((res && res.error) || '停止失败。', 'err');
     }
