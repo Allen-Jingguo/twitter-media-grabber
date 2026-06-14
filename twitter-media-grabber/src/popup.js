@@ -139,7 +139,8 @@ $('btn-audio-start').addEventListener('click', function () {
     return send(tab.id, {
       type: 'start-audio',
       transcribe: $('opt-transcribe').checked,
-      lang: $('opt-lang').value
+      lang: $('opt-lang').value,
+      model: $('opt-model').value
     });
   }).then(function (res) {
     if (res && res.ok) {
@@ -171,7 +172,7 @@ $('btn-live-start').addEventListener('click', function () {
   $('live-box').hidden = false;
   $('live-box').textContent = '正在聆听…（首次需加载语音模型，请稍候）';
   activeTab().then(function (tab) {
-    return send(tab.id, { type: 'start-live', lang: $('opt-lang').value });
+    return send(tab.id, { type: 'start-live', lang: $('opt-lang').value, model: $('opt-model').value });
   }).then(function (res) {
     if (res && res.ok) {
       setMsg('实时转写已开始，文字会随播放滚动出现。', 'ok');

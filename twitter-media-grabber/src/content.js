@@ -23,6 +23,7 @@
     recording: false,
     transcribe: false,     // convert recorded audio to text after stop?
     lang: 'auto',
+    model: 'onnx-community/whisper-base',
     transcribeStatus: '',  // '', 'pending', 'working: ...', 'done: ...', 'error: ...'
     live: null             // live (real-time) transcription session, see startLive()
   };
@@ -196,6 +197,7 @@
     state.recording = true;
     state.transcribe = !!opts.transcribe;
     state.lang = opts.lang || 'auto';
+    if (opts.model) state.model = opts.model;
     state.transcribeStatus = state.transcribe ? 'pending' : '';
     return { ok: true, mime: rec.mimeType || mime };
   }
@@ -208,7 +210,8 @@
         type: 'transcribe-audio',
         b64: T.u8ToBase64(new Uint8Array(buf)),
         mime: mime,
-        lang: state.lang
+        lang: state.lang,
+        model: state.model
       });
     }).catch(function (e) {
       state.transcribeStatus = 'error: ' + String((e && e.message) || e);
@@ -293,6 +296,7 @@
     var live = {
       ac: ac, source: source, proc: proc, sink: sink,
       lang: opts.lang || 'auto',
+      model: opts.model || state.model,
       cursorMs: 0,
       cues: [],
       text: '',
@@ -320,6 +324,7 @@
         windowStartMs: windowStartMs,
         windowDurationMs: Math.round(pcm16k.length / 16000 * 1000),
         lang: live.lang,
+        model: live.model,
         final: !!isFinal
       }).catch(function () {});
     }
@@ -355,6 +360,7 @@
 
     state.live = live;
     state.lang = live.lang;
+    state.model = live.model;
     state.transcribeStatus = 'live: 正在聆听…（首次需加载语音模型）';
 
     // AudioContext is often created "suspended" under the autoplay policy; if it
@@ -526,7 +532,7 @@
     }
 
     if (msg.type === 'start-audio') {
-      sendResponse(startAudio({ transcribe: msg.transcribe, lang: msg.lang }));
+      sendResponse(startAudio({ transcribe: msg.transcribe, lang: msg.lang, model: msg.model }));
       return true;
     }
 
@@ -536,7 +542,7 @@
     }
 
     if (msg.type === 'start-live') {
-      sendResponse(startLive({ lang: msg.lang }));
+      sendResponse(startLive({ lang: msg.lang, model: msg.model }));
       return true;
     }
 
