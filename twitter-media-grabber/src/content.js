@@ -282,6 +282,7 @@
     var rate = ac.sampleRate;
     var winSamples = Math.round(LIVE_WINDOW_SEC * rate);
     var hopSamples = Math.round(LIVE_HOP_SEC * rate);
+    var firstSamples = Math.round(3 * rate); // emit a first window after ~3s
     var capacity = winSamples + 4096;
     var buf = new Float32Array(capacity);
     var filled = 0;        // valid samples currently buffered (<= capacity)
@@ -296,7 +297,10 @@
       cues: [],
       text: '',
       stopping: false,
-      windows: 0,
+      windows: 0,      // audio windows sent for transcription
+      results: 0,      // results received back
+      maxLevel: 0,     // peak |sample| seen (to detect silence)
+      lastError: '',
       emit: emitWindow
     };
 
@@ -323,6 +327,11 @@
     proc.onaudioprocess = function (e) {
       var input = e.inputBuffer.getChannelData(0);
       var n = input.length;
+      // Track peak level so we can tell "silence" from "model failed" later.
+      for (var k = 0; k < n; k += 64) {
+        var a = input[k] < 0 ? -input[k] : input[k];
+        if (a > live.maxLevel) live.maxLevel = a;
+      }
       if (n >= capacity) {
         buf.set(input.subarray(n - capacity, n), 0);
         filled = capacity;
@@ -337,7 +346,8 @@
       }
       totalSamples += n;
       sinceEmit += n;
-      if (sinceEmit >= hopSamples) {
+      var due = sinceEmit >= hopSamples || (live.windows === 0 && totalSamples >= firstSamples);
+      if (due) {
         sinceEmit = 0;
         emitWindow(false);
       }
@@ -346,15 +356,32 @@
     state.live = live;
     state.lang = live.lang;
     state.transcribeStatus = 'live: 正在聆听…（首次需加载语音模型）';
+
+    // AudioContext is often created "suspended" under the autoplay policy; if it
+    // stays suspended no audio is processed and we'd capture nothing. Resume it,
+    // and warn if it refuses (the page may need a click first).
+    function checkRunning() {
+      if (!state.live || state.live !== live) return;
+      if (ac.state !== 'running') {
+        state.transcribeStatus = 'live: 音频未启动，请点击网页（视频）任意位置后重试…';
+      }
+    }
+    if (ac.state === 'suspended' && ac.resume) {
+      ac.resume().then(checkRunning).catch(checkRunning);
+    } else {
+      setTimeout(checkRunning, 1200);
+    }
     return { ok: true };
   }
 
   function onLiveChunkResult(msg) {
     var live = state.live;
     if (!live) return;
+    live.results++;
     if (!msg.ok) {
-      // Keep going on a single failed window, but surface the latest error.
-      state.transcribeStatus = 'live: 识别出错（' + (msg.error || '未知') + '），继续聆听…';
+      // Keep going on a single failed window, but remember the latest error.
+      live.lastError = msg.error || '未知错误';
+      state.transcribeStatus = 'live: 识别出错（' + live.lastError + '），继续聆听…';
       return;
     }
     var winCues = T.whisperChunksToCues(msg.chunks, msg.windowDurationMs);
@@ -366,7 +393,25 @@
       var added = res.cues.map(function (c) { return c.text; }).join(' ');
       live.text = live.text ? (live.text + ' ' + added) : added;
     }
-    state.transcribeStatus = 'live: ' + (live.text || '（暂无文字）');
+    state.transcribeStatus = 'live: ' + (live.text || '（聆听中，暂无文字…）');
+  }
+
+  // Explain an empty result so the user knows what to fix.
+  function liveDiagnosis(live) {
+    if (live.windows === 0) {
+      return '没有采集到音频。请确认视频正在播放、未静音，并已在网页上点击过一次；' +
+        '受 DRM 保护的视频无法捕获。';
+    }
+    if (live.maxLevel < 0.002) {
+      return '采集到的音频几乎是静音（峰值≈0）。请取消视频静音、调高音量后重试。';
+    }
+    if (live.results === 0) {
+      return '语音模型未返回结果，可能仍在下载模型（首次约 40MB）或网络受限，请稍后重试。';
+    }
+    if (live.lastError) {
+      return '转写器报错：' + live.lastError + '（常见为语音模型下载失败，请检查网络后重试）。';
+    }
+    return '音频有声音但未识别出文字，可能是纯音乐/噪声，或可尝试在“识别语言”中手动指定语言。';
   }
 
   function stopLive() {
@@ -382,13 +427,18 @@
     state.transcribeStatus = 'live: 正在生成文件…';
     // Give the last in-flight window(s) a moment to come back before saving.
     setTimeout(function () {
-      var name = siteName() + '-live-transcript-' + tsName();
-      downloadText(live.text || '（未识别到文字）', name + '.txt', 'text/plain');
-      if (live.cues.length) {
-        downloadText(Vtt.toSrt(live.cues), name + '.srt', 'application/x-subrip');
+      if (live.text) {
+        var name = siteName() + '-live-transcript-' + tsName();
+        downloadText(live.text, name + '.txt', 'text/plain');
+        if (live.cues.length) {
+          downloadText(Vtt.toSrt(live.cues), name + '.srt', 'application/x-subrip');
+        }
+        state.transcribeStatus = 'done: 实时转写 ' + live.text.length +
+          ' 字符，' + live.cues.length + ' 条字幕（.txt/.srt 已下载）';
+      } else {
+        // Nothing recognized: surface a concrete reason instead of a bare file.
+        state.transcribeStatus = 'error: 未识别到文字。' + liveDiagnosis(live);
       }
-      state.transcribeStatus = 'done: 实时转写 ' + (live.text || '').length +
-        ' 字符，' + live.cues.length + ' 条字幕（.txt/.srt 已下载）';
       state.live = null;
     }, 4000);
     return { ok: true };

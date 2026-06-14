@@ -79,9 +79,11 @@ function renderTranscribeStatus(st) {
     el.textContent = '转写失败：' + st.slice(6).trim();
   } else if (st.indexOf('done:') === 0) {
     el.classList.add('done');
-    el.textContent = '转写完成：' + st.slice(5).trim() + '（.txt/.srt 已下载）';
+    el.textContent = st.slice(5).trim();
   } else if (st.indexOf('working:') === 0) {
     el.textContent = '转写中：' + st.slice(8).trim();
+  } else if (st.indexOf('live:') === 0) {
+    el.textContent = st.slice(5).trim();
   } else {
     el.textContent = '等待录制结束后开始转写…';
   }
