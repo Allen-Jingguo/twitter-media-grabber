@@ -1,3 +1,8 @@
 node_modules/
 *.log
 .DS_Store
+
+# Local Whisper model weights (hundreds of MB; some .onnx exceed GitHub's
+# 100MB per-file limit). Fetch with ./download-models.sh + ./use-local-models.sh.
+models/
+src/models/
