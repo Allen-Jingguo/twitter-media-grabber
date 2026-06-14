@@ -21,12 +21,50 @@ function activeTab() {
   });
 }
 
-function send(tabId, msg) {
+// Content scripts, in load order. Mirrors manifest.json so we can inject them
+// on demand into tabs that were already open before the extension loaded.
+var MAIN_SCRIPTS = ['src/inject.js'];
+var ISOLATED_SCRIPTS = ['src/lib/vtt.js', 'src/lib/m3u8.js', 'src/lib/transcript.js', 'src/content.js'];
+
+function rawSend(tabId, msg) {
   return new Promise(function (resolve, reject) {
     chrome.tabs.sendMessage(tabId, msg, function (resp) {
       var err = chrome.runtime.lastError;
-      if (err) return reject(new Error(err.message + '（请刷新页面后重试）'));
+      if (err) return reject(new Error(err.message));
       resolve(resp);
+    });
+  });
+}
+
+// Programmatically inject the content scripts (used when a tab predates the
+// extension and therefore has no receiver yet).
+function injectContentScripts(tabId) {
+  function exec(files, world) {
+    return chrome.scripting.executeScript({
+      target: { tabId: tabId, allFrames: false },
+      files: files,
+      world: world,
+      injectImmediately: true
+    });
+  }
+  return exec(MAIN_SCRIPTS, 'MAIN').then(function () {
+    return exec(ISOLATED_SCRIPTS, 'ISOLATED');
+  });
+}
+
+function send(tabId, msg) {
+  return rawSend(tabId, msg).catch(function (err) {
+    // "Receiving end does not exist" => no content script yet. Inject and retry.
+    if (!/Receiving end does not exist|Could not establish connection/i.test(err.message)) {
+      throw new Error(err.message + '（请刷新页面后重试）');
+    }
+    if (!chrome.scripting || !chrome.scripting.executeScript) {
+      throw new Error('页面尚未就绪，请刷新页面后重试。');
+    }
+    return injectContentScripts(tabId).then(function () {
+      return rawSend(tabId, msg);
+    }).catch(function (e2) {
+      throw new Error('无法在此页面运行（可能是受限页面）：' + e2.message);
     });
   });
 }

@@ -9,6 +9,11 @@
 (function () {
   'use strict';
 
+  // Idempotent: this may be injected both via the manifest and on demand by the
+  // popup (for tabs opened before the extension loaded); only patch once.
+  if (window.__TMG_INJECT_LOADED__) return;
+  window.__TMG_INJECT_LOADED__ = true;
+
   var TAG = 'TMG_PAGE';
 
   function post(type, payload) {

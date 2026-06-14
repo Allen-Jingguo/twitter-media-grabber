@@ -7,6 +7,11 @@
 (function () {
   'use strict';
 
+  // Idempotent: may be injected via the manifest and again on demand by the
+  // popup; a second listener would double-respond, so bail if already loaded.
+  if (self.__TMG_CONTENT_LOADED__) return;
+  self.__TMG_CONTENT_LOADED__ = true;
+
   var Vtt = self.TMGVtt;
   var M3u8 = self.TMGM3u8;
   var T = self.TMGTranscript;
