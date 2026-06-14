@@ -9,8 +9,14 @@ import { pipeline, env } from './vendor/transformers.min.js';
 
 const T = self.TMGTranscript;
 
-// Change to 'onnx-community/whisper-base' for better quality (bigger download).
-const MODEL_ID = 'onnx-community/whisper-tiny';
+// Default model. Whisper-base handles mixed Chinese/English noticeably better
+// than tiny; the popup can request tiny (faster) or small (most accurate).
+const DEFAULT_MODEL = 'onnx-community/whisper-base';
+const ALLOWED_MODELS = {
+  'onnx-community/whisper-tiny': true,
+  'onnx-community/whisper-base': true,
+  'onnx-community/whisper-small': true
+};
 const TARGET_RATE = 16000;
 
 env.allowLocalModels = false;
@@ -24,7 +30,9 @@ if (ortWasmEnv) {
   ortWasmEnv.numThreads = 1;
 }
 
-let asrPromise = null;
+// One pipeline per model id (a session sticks to one model, but caching per id
+// means switching models in the popup doesn't reload an already-loaded one).
+const asrPromises = {};
 
 function report(tabId, stage, detail) {
   chrome.runtime.sendMessage({
@@ -35,9 +43,10 @@ function report(tabId, stage, detail) {
   }).catch(() => {});
 }
 
-function getAsr(tabId) {
-  if (!asrPromise) {
-    asrPromise = pipeline('automatic-speech-recognition', MODEL_ID, {
+function getAsr(tabId, modelId) {
+  const id = ALLOWED_MODELS[modelId] ? modelId : DEFAULT_MODEL;
+  if (!asrPromises[id]) {
+    asrPromises[id] = pipeline('automatic-speech-recognition', id, {
       dtype: 'q8',
       device: 'wasm',
       progress_callback: (p) => {
@@ -46,11 +55,11 @@ function getAsr(tabId) {
         }
       }
     }).catch((e) => {
-      asrPromise = null; // allow retry after a failed model download
+      asrPromises[id] = null; // allow retry after a failed model download
       throw e;
     });
   }
-  return asrPromise;
+  return asrPromises[id];
 }
 
 async function decodeToPcm16k(bytes) {
@@ -77,7 +86,7 @@ async function transcribe(msg) {
     const durationMs = Math.round((pcm.length / TARGET_RATE) * 1000);
 
     report(tabId, 'loading-model');
-    const asr = await getAsr(tabId);
+    const asr = await getAsr(tabId, msg.model);
 
     report(tabId, 'transcribing');
     const opts = {
@@ -86,7 +95,9 @@ async function transcribe(msg) {
       return_timestamps: true,
       task: 'transcribe'
     };
-    if (msg.lang && msg.lang !== 'auto') opts.language = msg.lang;
+    // Leave language unset for 'auto'/'mixed' so Whisper detects it per chunk
+    // (required for code-switching Chinese/English audio).
+    if (msg.lang && msg.lang !== 'auto' && msg.lang !== 'mixed') opts.language = msg.lang;
     const out = await asr(pcm, opts);
 
     chrome.runtime.sendMessage({
@@ -122,9 +133,9 @@ async function transcribeChunk(msg) {
     }
     if (!pcm.length) throw new Error('空音频窗口');
 
-    const asr = await getAsr(tabId);
+    const asr = await getAsr(tabId, msg.model);
     const opts = { chunk_length_s: 30, return_timestamps: true, task: 'transcribe' };
-    if (msg.lang && msg.lang !== 'auto') opts.language = msg.lang;
+    if (msg.lang && msg.lang !== 'auto' && msg.lang !== 'mixed') opts.language = msg.lang;
     const out = await asr(pcm, opts);
 
     chrome.runtime.sendMessage({

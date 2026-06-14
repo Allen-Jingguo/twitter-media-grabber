@@ -35,7 +35,8 @@ chrome.runtime.onMessage.addListener(function (msg, sender) {
         tabId: tabId,
         b64: msg.b64,
         mime: msg.mime,
-        lang: msg.lang
+        lang: msg.lang,
+        model: msg.model
       });
     }).catch(function (e) {
       if (tabId != null) {
@@ -62,6 +63,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender) {
         windowStartMs: msg.windowStartMs,
         windowDurationMs: msg.windowDurationMs,
         lang: msg.lang,
+        model: msg.model,
         final: msg.final
       });
     }).catch(function (e) {

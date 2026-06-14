@@ -35,10 +35,18 @@
     </label>
     <label class="fmt">识别语言
       <select id="opt-lang">
+        <option value="mixed">中英混合（自动）</option>
         <option value="auto">自动检测</option>
         <option value="zh">中文</option>
         <option value="en">English</option>
         <option value="ja">日本語</option>
+      </select>
+    </label>
+    <label class="fmt">语音模型
+      <select id="opt-model">
+        <option value="onnx-community/whisper-tiny">tiny · 最快 · 最不准（~40MB）</option>
+        <option value="onnx-community/whisper-base" selected>base · 较准 · 推荐中英混合（~80MB）</option>
+        <option value="onnx-community/whisper-small">small · 最准 · 较慢（~250MB）</option>
       </select>
     </label>
     <button id="btn-audio-start" class="primary">开始录制音频</button>
