@@ -24,10 +24,10 @@ Most sites (including Twitter/X) play video over **HLS**. The extension's parts:
 | File | World | Role |
 |------|-------|------|
 | `src/inject.js` | MAIN | Patches `fetch`/`XMLHttpRequest` to observe the player's own traffic and discover the master `.m3u8` playlist and rolling `.vtt` caption segments. |
-| `src/content.js` | ISOLATED | Receives those discoveries, captures `<video>` audio (`captureStream()` + `MediaRecorder` for clips, `AudioContext`/`ScriptProcessor` for live windows), actively fetches subtitle segments from HLS, merges/dedupes, and triggers downloads. |
-| `src/popup.{html,js,css}` | — | UI: status, subtitle format picker, audio record/stop, transcribe toggle + language, and live-transcription start/stop with a streaming text box. |
-| `src/background.js` | service worker | Creates the offscreen document and routes audio / window / result messages between tab and transcriber. |
-| `src/offscreen.html/.js` | offscreen | Decodes audio (WebAudio), resamples to 16 kHz mono, runs Whisper (`onnx-community/whisper-{tiny,base,small}`, q8; base default) via vendored transformers.js + ONNX WASM. Live windows are serialized on a queue so the pipeline runs one at a time. |
+| `src/content.js` | ISOLATED | Receives those discoveries, records `<video>` audio clips (`captureStream()` + `MediaRecorder`), actively fetches subtitle segments from HLS, merges/dedupes, and triggers downloads. |
+| `src/popup.{html,js,css}` | — | UI: status, subtitle format picker, audio record/stop, transcribe toggle + language/model, and live-transcription start/stop with a streaming text box. |
+| `src/background.js` | service worker | Owns the offscreen document; routes batch transcription; drives the live session (`tabCapture.getMediaStreamId`, keeps live state for the popup to poll, saves `.txt`/`.srt` via `chrome.downloads`). |
+| `src/offscreen.html/.js` | offscreen | Runs Whisper (`onnx-community/whisper-{tiny,base,small}`, q8; base default) via vendored transformers.js + ONNX WASM. Also captures **tab audio** (`getUserMedia` tab source) for live transcription and slices it into windows. |
 
 Subtitles are gathered from **three** sources and merged (de-duplicated, sorted):
 1. The live `<video>.textTracks` cues.
@@ -35,11 +35,12 @@ Subtitles are gathered from **three** sources and merged (de-duplicated, sorted)
 3. An active walk of the HLS master → subtitle media playlist → all `.vtt`
    segments (so you get the *full* track, not just the played part).
 
-**Live transcription** instead pulls the playing audio through WebAudio into
-overlapping ~8 s windows (5 s hop), resamples each to 16 kHz Int16 PCM, and
-streams it to the offscreen Whisper. Returned cues are mapped onto the absolute
-timeline (`shiftCues`) and de-overlapped with a running cursor
-(`dedupeCuesByCursor`) so the accumulated text/SRT has no duplicated regions.
+**Live transcription** captures the **tab's audio output** (not the `<video>`
+element, which is silent when the media is cross-origin/protected as on Douyin):
+the background worker gets a tab media-stream id and the offscreen document opens
+it with `getUserMedia`, slices it into non-overlapping ~6 s windows, and runs
+each through Whisper. Recognized text is appended directly (so nothing is lost
+when a window has no chunk timestamps); chunks only time-stamp the `.srt`.
 
 Pure parsing/audio logic lives in `src/lib/vtt.js`, `src/lib/m3u8.js` and
 `src/lib/transcript.js` so it can be unit-tested in node.
@@ -95,8 +96,14 @@ only in your local checkout.
 
 1. Open any page with a video (e.g. a tweet on `x.com`) and **play** it.
 2. Click the extension icon.
-   - **Subtitles:** turn on **CC** in the player, let it play a few seconds,
-     pick a format (SRT / VTT / TXT) and click **抓取并下载字幕**.
+   - **Subtitles:** only works when the video actually ships a caption track
+     (turn on **CC**, let it play, pick SRT / VTT / TXT, click **抓取并下载字幕**).
+     Many sites (Douyin, etc.) have no caption track — use live transcription.
+   - **Live transcription (real-time):** click **开始实时转写**. This captures the
+     **tab's audio output** (so it works even where the player protects its
+     media, like Douyin, where `video.captureStream()` is silent), transcribes
+     it locally window-by-window, and streams text into the popup. Click **停止并
+     保存** to download `.txt` + `.srt`.
    - **Audio:** click **开始录制音频** while the video plays, then
      **停止 · 下载 · 转写** when done. The file downloads as `.webm` (Opus).
    - **Speech-to-text:** keep **停止后转写为文字** checked, choose a **语言** and

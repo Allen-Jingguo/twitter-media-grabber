@@ -124,51 +124,153 @@ async function transcribe(msg) {
   }
 }
 
-// Live transcription: each window is a short raw-PCM slice. Serialize them on
-// a single promise chain so the (non-reentrant) Whisper pipeline runs them one
-// at a time and results come back in order.
-let chunkQueue = Promise.resolve();
+/* ---- live transcription via tab-audio capture ----------------------------
+ * captureStream() on a <video> yields silence when the media is cross-origin
+ * (Douyin, many CDNs). Capturing the *tab's* audio output instead works
+ * regardless, so live transcription runs entirely here: getUserMedia(tab) ->
+ * WebAudio -> non-overlapping ~6s windows -> Whisper -> live text to the popup.
+ */
+const Vtt = self.TMGVtt;
+const LIVE_WINDOW_SEC = 6;
+let live = null;
 
-async function transcribeChunk(msg) {
-  const tabId = msg.tabId;
+function liveReport(extra) {
+  if (!live) return;
+  chrome.runtime.sendMessage(Object.assign({
+    type: 'live-progress',
+    text: live.text,
+    windows: live.windows,
+    results: live.results,
+    maxLevel: Math.round(live.maxLevel * 1000) / 1000,
+    error: live.lastError
+  }, extra || {})).catch(() => {});
+}
+
+function liveDrain(want) {
+  if (!live || want <= 0 || live.pendingLen < want) return;
+  const win = new Float32Array(want);
+  let off = 0;
+  while (off < want && live.pending.length) {
+    const blk = live.pending[0];
+    const need = want - off;
+    if (blk.length <= need) { win.set(blk, off); off += blk.length; live.pending.shift(); }
+    else { win.set(blk.subarray(0, need), off); off += need; live.pending[0] = blk.subarray(need); }
+  }
+  live.pendingLen -= want;
+  const startMs = Math.round(live.emitted / live.rate * 1000);
+  live.emitted += want;
+  const pcm = T.resampleLinear(win, live.rate, TARGET_RATE);
+  if (pcm.length < TARGET_RATE * 0.3) return; // <0.3s
+  live.windows++;
+  live.queue = live.queue.then(() => liveTranscribeWindow(pcm, startMs)).catch(() => {});
+}
+
+async function liveTranscribeWindow(pcm, startMs) {
+  if (!live) return;
   try {
-    const i16 = new Int16Array(T.base64ToU8(msg.b64).buffer);
-    let pcm = T.int16ToFloat(i16);
-    if (msg.sampleRate && msg.sampleRate !== TARGET_RATE) {
-      pcm = T.resampleLinear(pcm, msg.sampleRate, TARGET_RATE);
-    }
-    if (!pcm.length) throw new Error('空音频窗口');
-
-    const asr = await getAsr(tabId, msg.model);
+    const asr = await getAsr(live.tabId, live.model);
     const opts = { chunk_length_s: 30, return_timestamps: true, task: 'transcribe' };
-    if (msg.lang && msg.lang !== 'auto' && msg.lang !== 'mixed') opts.language = msg.lang;
+    if (live.lang && live.lang !== 'auto' && live.lang !== 'mixed') opts.language = live.lang;
     const out = await asr(pcm, opts);
-
-    chrome.runtime.sendMessage({
-      type: 'transcribe-chunk-result',
-      tabId: tabId,
-      ok: true,
-      seq: msg.seq,
-      windowStartMs: msg.windowStartMs,
-      windowDurationMs: msg.windowDurationMs,
-      text: String(out.text || '').trim(),
-      chunks: out.chunks || []
-    }).catch(() => {});
+    if (!live) return;
+    live.results++;
+    const txt = String(out.text || '').trim();
+    const durMs = Math.round(pcm.length / TARGET_RATE * 1000);
+    let cues = T.shiftCues(T.whisperChunksToCues(out.chunks || [], durMs), startMs);
+    if (!cues.length && txt) cues = [{ start: startMs, end: startMs + durMs, text: txt }];
+    if (cues.length) live.cues = live.cues.concat(cues);
+    if (txt) live.text = live.text ? (live.text + ' ' + txt) : txt;
+    liveReport();
   } catch (e) {
-    chrome.runtime.sendMessage({
-      type: 'transcribe-chunk-result',
-      tabId: tabId,
-      ok: false,
-      seq: msg.seq,
-      error: String((e && e.message) || e)
-    }).catch(() => {});
+    if (live) { live.lastError = String((e && e.message) || e); liveReport(); }
   }
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === 'offscreen-transcribe') {
-    transcribe(msg);
-  } else if (msg && msg.type === 'offscreen-transcribe-chunk') {
-    chunkQueue = chunkQueue.then(() => transcribeChunk(msg)).catch(() => {});
+async function liveStart(msg) {
+  if (live) return;
+  let stream, ac;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: msg.streamId } },
+      video: false
+    });
+  } catch (e) {
+    chrome.runtime.sendMessage({
+      type: 'live-progress', error: '无法捕获标签页音频：' + String((e && e.message) || e)
+    }).catch(() => {});
+    return;
   }
+
+  ac = new AudioContext();
+  const source = ac.createMediaStreamSource(stream);
+  // Tab capture re-routes the tab's audio into our stream; play it back so the
+  // user still hears the video.
+  source.connect(ac.destination);
+  const proc = ac.createScriptProcessor(4096, 1, 1);
+  const sink = ac.createGain();
+  sink.gain.value = 0;
+  source.connect(proc);
+  proc.connect(sink);
+  sink.connect(ac.destination);
+
+  const rate = ac.sampleRate;
+  live = {
+    stream, ac, source, proc, sink, rate,
+    winSamples: Math.round(LIVE_WINDOW_SEC * rate),
+    firstSamples: Math.round(3 * rate),
+    pending: [], pendingLen: 0, emitted: 0, firstDone: false,
+    lang: msg.lang, model: msg.model, tabId: msg.tabId,
+    queue: Promise.resolve(), text: '', cues: [],
+    maxLevel: 0, windows: 0, results: 0, lastError: '', stopping: false
+  };
+
+  proc.onaudioprocess = (e) => {
+    if (!live || live.stopping) return;
+    const input = e.inputBuffer.getChannelData(0);
+    const n = input.length;
+    const copy = new Float32Array(n);
+    copy.set(input);
+    for (let k = 0; k < n; k += 64) { const a = copy[k] < 0 ? -copy[k] : copy[k]; if (a > live.maxLevel) live.maxLevel = a; }
+    live.pending.push(copy);
+    live.pendingLen += n;
+    if (!live.firstDone && live.pendingLen >= live.firstSamples) {
+      live.firstDone = true;
+      liveDrain(Math.min(live.pendingLen, live.winSamples));
+    }
+    while (live.pendingLen >= live.winSamples) liveDrain(live.winSamples);
+  };
+
+  getAsr(live.tabId, live.model).catch(() => {}); // warm up the model
+  liveReport();
+}
+
+async function liveStop() {
+  const cur = live;
+  if (!cur || cur.stopping) return;
+  cur.stopping = true;
+  try { cur.proc.onaudioprocess = null; } catch (e) {}
+  if (cur.pendingLen > 0) liveDrain(cur.pendingLen); // flush the tail window
+  await cur.queue.catch(() => {});
+  try { cur.proc.disconnect(); cur.source.disconnect(); cur.sink.disconnect(); } catch (e) {}
+  try { cur.stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+  try { cur.ac.close(); } catch (e) {}
+  const ordered = cur.cues.slice().sort((a, b) => a.start - b.start);
+  chrome.runtime.sendMessage({
+    type: 'live-done',
+    text: cur.text,
+    srt: ordered.length ? Vtt.toSrt(ordered) : '',
+    cues: ordered.length,
+    windows: cur.windows,
+    results: cur.results,
+    maxLevel: Math.round(cur.maxLevel * 1000) / 1000,
+    error: cur.lastError
+  }).catch(() => {});
+  live = null;
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg) return;
+  if (msg.type === 'offscreen-transcribe') transcribe(msg);
+  else if (msg.type === 'offscreen-live-start') liveStart(msg);
+  else if (msg.type === 'offscreen-live-stop') liveStop();
 });
