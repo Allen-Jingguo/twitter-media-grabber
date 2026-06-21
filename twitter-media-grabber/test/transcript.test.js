@@ -147,6 +147,73 @@ H.test('dedupeCuesByCursor tolerates small jitter before the cursor', function (
   t.equal(r2.cues.length, 0, 'well before cursor is dropped');
 });
 
+H.test('collapseRepeats squashes long word-repetition loops', function (t) {
+  // The "much, much, much, …" hallucination from the real transcript.
+  var much = new Array(120).fill('much,').join(' ');
+  t.equal(T.collapseRepeats(much), 'much', 'a wall of "much," collapses to one word');
+
+  // Mixed: a genuine phrase wrapped around a loop keeps the real words.
+  t.equal(
+    T.collapseRepeats('this, this, this, this, this, times this.'),
+    'this times this.',
+    'loop collapses but surrounding words survive'
+  );
+});
+
+H.test('collapseRepeats handles hyphen-joined char loops ("B-B-B-B")', function (t) {
+  t.equal(T.collapseRepeats('B-B-B-B-B-B-B-B'), 'B');
+  t.equal(T.collapseRepeats('well B-B-B-B done'), 'well B done');
+});
+
+H.test('collapseRepeats keeps short, legitimate repeats', function (t) {
+  t.equal(T.collapseRepeats('no no no'), 'no no no', '<= threshold (3) untouched');
+  t.equal(T.collapseRepeats('Hello world'), 'Hello world');
+  t.equal(T.collapseRepeats(''), '');
+  t.equal(T.collapseRepeats(null), '');
+});
+
+H.test('isDegenerateText flags hallucinated windows, spares real speech', function (t) {
+  t.ok(T.isDegenerateText(new Array(50).fill('much').join(' ')), 'one token x50 is degenerate');
+  t.ok(T.isDegenerateText('B B B B B B B B'), 'few distinct tokens, many repeats');
+  t.ok(!T.isDegenerateText('The Python program runs creates a result and then passes this.'),
+    'a normal sentence is not degenerate');
+  t.ok(!T.isDegenerateText('much much'), 'too short to judge -> not degenerate');
+});
+
+H.test('sanitizeCues cleans repetition and drops emptied cues', function (t) {
+  var cues = T.sanitizeCues([
+    { start: 0, end: 1000, text: 'And so, let us see what it looks like.' },
+    { start: 1000, end: 6000, text: new Array(80).fill('much,').join(' ') },
+    { start: 6000, end: 7000, text: '   ' }
+  ]);
+  t.equal(cues.length, 2, 'blank cue dropped, others kept');
+  t.equal(cues[0].text, 'And so, let us see what it looks like.');
+  t.equal(cues[1].text, 'much', 'repetition loop collapsed in place');
+});
+
+H.test('live pipeline: overlapping windows dedupe to clean, ordered cues', function (t) {
+  // Two overlapping ~8s windows (hop 5s) re-transcribe the shared 3s; one of
+  // them also contains a "much" loop. Exercises sanitize + dedupe together.
+  var cursor = 0;
+  var w1 = T.sanitizeCues(T.shiftCues(T.whisperChunksToCues([
+    { timestamp: [0, 3], text: 'The problem now' },
+    { timestamp: [3, 6], text: 'is what if we want' }
+  ], 8000), 0));
+  var d1 = T.dedupeCuesByCursor(w1, cursor); cursor = d1.cursorMs;
+
+  var w2 = T.sanitizeCues(T.shiftCues(T.whisperChunksToCues([
+    { timestamp: [0, 1], text: 'is what if we want' },           // overlap, dropped
+    { timestamp: [1, 4], text: 'something ' + new Array(40).fill('much,').join(' ') }
+  ], 8000), 5000));
+  var d2 = T.dedupeCuesByCursor(w2, cursor); cursor = d2.cursorMs;
+
+  var all = d1.cues.concat(d2.cues);
+  var text = all.map(function (c) { return c.text; }).join(' ');
+  t.equal(text, 'The problem now is what if we want something much',
+    'no duplicated overlap, loop collapsed');
+  for (var i = 1; i < all.length; i++) t.ok(all[i].start >= all[i - 1].start, 'cues stay ordered');
+});
+
 H.test('cues from whisper render to valid SRT via TMGVtt', function (t) {
   var cues = T.whisperChunksToCues([
     { timestamp: [0, 1.5], text: '你好，世界' },
