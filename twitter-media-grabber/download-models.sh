@@ -11,6 +11,7 @@
 #   ./download-models.sh                # downloads whisper-base (recommended)
 #   ./download-models.sh base small     # several models
 #   ./download-models.sh tiny base small
+#   ./download-models.sh large-v3-turbo # most accurate (Chinese / zh+en), large
 #   OUT=/path/to/dir ./download-models.sh base   # custom output dir
 #
 # Output layout (per model), under ./models/ by default:

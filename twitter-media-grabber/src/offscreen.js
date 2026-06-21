@@ -21,12 +21,15 @@ console.warn = (...args) => {
 const T = self.TMGTranscript;
 
 // Default model. Whisper-base handles mixed Chinese/English noticeably better
-// than tiny; the popup can request tiny (faster) or small (most accurate).
+// than tiny; the popup can request tiny (faster), small, or large-v3-turbo —
+// the most accurate for Chinese and Chinese/English code-switching, at the cost
+// of a larger one-time download and slower decoding.
 const DEFAULT_MODEL = 'onnx-community/whisper-base';
 const ALLOWED_MODELS = {
   'onnx-community/whisper-tiny': true,
   'onnx-community/whisper-base': true,
-  'onnx-community/whisper-small': true
+  'onnx-community/whisper-small': true,
+  'onnx-community/whisper-large-v3-turbo': true
 };
 const TARGET_RATE = 16000;
 
@@ -328,8 +331,10 @@ async function liveTranscribeWindow(pcm, startMs) {
       no_repeat_ngram_size: 3,
       // A narrow beam improves accuracy (fewer homophone errors) while keeping
       // per-window decode fast enough to stay real-time; the offline path above
-      // uses a wider beam since it isn't latency sensitive.
-      num_beams: 2
+      // uses a wider beam since it isn't latency sensitive. The large model's
+      // encoder is already heavy on WASM, so fall back to greedy for it in live
+      // mode to avoid lagging behind real-time.
+      num_beams: /large/.test(live.model || '') ? 1 : 2
     };
     if (language) opts.language = language;
     const out = await asr(pcm, opts);
