@@ -66,8 +66,9 @@
     <label class="fmt">语音模型
       <select id="opt-model">
         <option value="onnx-community/whisper-tiny">tiny · 最快 · 最不准（~40MB）</option>
-        <option value="onnx-community/whisper-base" selected>base · 较准 · 推荐中英混合（~80MB）</option>
-        <option value="onnx-community/whisper-small">small · 最准 · 较慢（~250MB）</option>
+        <option value="onnx-community/whisper-base" selected>base · 较准 · 中英混合（~80MB）</option>
+        <option value="onnx-community/whisper-small">small · 更准 · 较慢（~250MB）</option>
+        <option value="onnx-community/whisper-large-v3-turbo">large-v3-turbo · 最准 · 中英多语种最佳（~400MB，慢，首次需下载）</option>
       </select>
     </label>
     <button id="btn-audio-start" class="primary">开始录制音频</button>
