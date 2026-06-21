@@ -108,6 +108,79 @@
     return { cues: kept, cursorMs: cur };
   }
 
+  // Normalise a token for repeat comparison: lower-case, strip surrounding
+  // punctuation/quotes so "much," "much." and "Much" all compare equal.
+  function normToken(tok) {
+    return String(tok == null ? '' : tok)
+      .toLowerCase()
+      .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+  }
+
+  /*
+   * Whisper loops on near-silent / low-information audio and emits the same
+   * token hundreds of times ("much, much, much, …" or hyphen-joined "B-B-B-B").
+   * collapseRepeats squashes any run of the same token longer than `threshold`
+   * down to a single clean copy, while leaving genuine short repeats ("no no
+   * no") intact. Pure string -> string so it can be unit-tested and reused for
+   * both the batch result and each live window.
+   */
+  function collapseRepeats(text, opts) {
+    if (text == null) return '';
+    opts = opts || {};
+    var threshold = opts.threshold == null ? 3 : opts.threshold;
+    var s = String(text);
+    // Hyphen-joined single-token repeats: "B-B-B-B" / "B - B - B" -> "B".
+    s = s.replace(/([^\s-]+)(?:\s*-\s*\1){2,}/giu, '$1');
+    var tokens = s.split(/\s+/).filter(Boolean);
+    var out = [];
+    var i = 0;
+    while (i < tokens.length) {
+      var key = normToken(tokens[i]);
+      var j = i + 1;
+      while (key && j < tokens.length && normToken(tokens[j]) === key) j++;
+      if (j - i > threshold) {
+        // Degenerate loop: keep one copy, stripped of trailing punctuation.
+        var clean = tokens[i].replace(/[^\p{L}\p{N}]+$/u, '');
+        out.push(clean || tokens[i]);
+      } else {
+        for (var m = i; m < j; m++) out.push(tokens[m]);
+      }
+      i = j;
+    }
+    return out.join(' ').trim();
+  }
+
+  /*
+   * True when `text` is dominated by a handful of distinct tokens repeated many
+   * times — the signature of a Whisper hallucination on silence/noise. Used to
+   * drop whole windows/cues rather than surface garbage. Short text (< minTokens)
+   * is never flagged so ordinary phrases pass through.
+   */
+  function isDegenerateText(text, opts) {
+    opts = opts || {};
+    var minTokens = opts.minTokens == null ? 6 : opts.minTokens;
+    var maxUniqueRatio = opts.maxUniqueRatio == null ? 0.25 : opts.maxUniqueRatio;
+    var toks = String(text == null ? '' : text).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    if (toks.length < minTokens) return false;
+    var uniq = Object.create(null);
+    for (var i = 0; i < toks.length; i++) uniq[toks[i]] = 1;
+    return Object.keys(uniq).length / toks.length <= maxUniqueRatio;
+  }
+
+  /*
+   * Clean a list of {start,end,text} cues: collapse repetition loops in each
+   * cue's text and drop cues that are empty after cleaning. Pure, order-preserving.
+   */
+  function sanitizeCues(cues, opts) {
+    var out = [];
+    (cues || []).forEach(function (c) {
+      var text = collapseRepeats(c.text, opts);
+      if (!text) return;
+      out.push({ start: c.start, end: c.end, text: text });
+    });
+    return out;
+  }
+
   /*
    * Whisper pipelines return { text, chunks: [{ timestamp: [startSec, endSec|null], text }] }.
    * Convert to the cue shape ({start,end,text} in ms) used by TMGVtt.toSrt/toVtt.
@@ -151,6 +224,9 @@
     int16ToFloat: int16ToFloat,
     shiftCues: shiftCues,
     dedupeCuesByCursor: dedupeCuesByCursor,
+    collapseRepeats: collapseRepeats,
+    isDegenerateText: isDegenerateText,
+    sanitizeCues: sanitizeCues,
     whisperChunksToCues: whisperChunksToCues
   };
 
