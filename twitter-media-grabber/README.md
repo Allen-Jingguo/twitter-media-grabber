@@ -120,10 +120,14 @@ only in your local checkout.
      **语音模型**. After recording stops, the audio is transcribed locally and a
      `.txt` + `.srt` download automatically. The first run of each model
      downloads it from huggingface.co and caches it; later runs are offline.
-   - **Mixed Chinese/English speech:** pick language **中英混合（自动）** (leaves
-     Whisper's language unset so it detects per segment — forcing `zh` or `en`
-     mangles the other language) and model **base** or **small** (tiny is poor
-     at code-switching). Models: tiny ~40 MB, base ~80 MB, small ~250 MB.
+   - **Multilingual / mixed speech (Chinese + other languages):** pick language
+     **多语种混合 · 自动** (leaves Whisper's language unset so it detects per
+     segment — forcing a single language mangles the others). The picker also
+     offers ~20 specific languages (Chinese, English, Japanese, Korean, French,
+     German, Spanish, Russian, Arabic, Vietnamese, Thai, etc.); choose one only
+     when the audio is entirely in that language. Use model **base** or **small**
+     (tiny is poor at code-switching). Models: tiny ~40 MB, base ~80 MB,
+     small ~250 MB.
 
 ## Self-test
 

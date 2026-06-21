@@ -105,7 +105,8 @@ async function transcribe(msg) {
       no_repeat_ngram_size: 3
     };
     // Leave language unset for 'auto'/'mixed' so Whisper detects it per chunk
-    // (required for code-switching Chinese/English audio).
+    // (required for code-switching audio, e.g. Chinese mixed with English,
+    // Japanese, Korean or any other supported language).
     if (msg.lang && msg.lang !== 'auto' && msg.lang !== 'mixed') opts.language = msg.lang;
     const out = await asr(pcm, opts);
 

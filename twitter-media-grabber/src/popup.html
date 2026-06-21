@@ -35,11 +35,32 @@
     </label>
     <label class="fmt">识别语言
       <select id="opt-lang">
-        <option value="mixed">中英混合（自动）</option>
-        <option value="auto">自动检测</option>
-        <option value="zh">中文</option>
-        <option value="en">English</option>
-        <option value="ja">日本語</option>
+        <optgroup label="多语种（含中文）">
+          <option value="mixed">多语种混合 · 自动（推荐）</option>
+          <option value="auto">自动检测单一语种</option>
+        </optgroup>
+        <optgroup label="常用">
+          <option value="zh">中文 Chinese</option>
+          <option value="en">English 英语</option>
+          <option value="ja">日本語 Japanese</option>
+          <option value="ko">한국어 Korean</option>
+        </optgroup>
+        <optgroup label="其他语种">
+          <option value="fr">Français French</option>
+          <option value="de">Deutsch German</option>
+          <option value="es">Español Spanish</option>
+          <option value="ru">Русский Russian</option>
+          <option value="pt">Português Portuguese</option>
+          <option value="it">Italiano Italian</option>
+          <option value="ar">العربية Arabic</option>
+          <option value="hi">हिन्दी Hindi</option>
+          <option value="vi">Tiếng Việt Vietnamese</option>
+          <option value="th">ไทย Thai</option>
+          <option value="id">Indonesia Indonesian</option>
+          <option value="tr">Türkçe Turkish</option>
+          <option value="nl">Nederlands Dutch</option>
+          <option value="uk">Українська Ukrainian</option>
+        </optgroup>
       </select>
     </label>
     <label class="fmt">语音模型
