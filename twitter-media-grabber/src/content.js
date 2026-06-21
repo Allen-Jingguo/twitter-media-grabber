@@ -75,10 +75,13 @@
     return arrays;
   }
 
+  // Passively intercepted .vtt are HLS *segments* (each restarts near 00:00 with
+  // its real time in X-TIMESTAMP-MAP), so align them onto one timeline before use.
   function cuesFromPassiveVtt() {
-    return Object.keys(state.vttSegments).map(function (url) {
-      return Vtt.parseVtt(state.vttSegments[url]);
+    var texts = Object.keys(state.vttSegments).map(function (url) {
+      return state.vttSegments[url];
     });
+    return Vtt.alignSegmentCues(texts);
   }
 
   // Walk a discovered master playlist -> subtitle media playlist -> .vtt segments.
@@ -91,19 +94,21 @@
       if (!tracks.length) return Promise.resolve([]);
       var track = tracks.filter(function (t) { return t["default"]; })[0] || tracks[0];
       return fetchText(track.uri).then(function (mediaText) {
+        // The track URI is usually a media playlist, but some servers return a
+        // single full .vtt directly — parse that as-is.
+        if (Vtt.isVtt(mediaText)) return Vtt.parseVtt(mediaText);
         var segs = M3u8.parseSegments(mediaText, track.uri);
         return Promise.all(segs.map(function (s) {
-          return fetchText(s).then(function (t) { return Vtt.parseVtt(t); })
-            .catch(function () { return []; });
-        }));
+          return fetchText(s).catch(function () { return ''; });
+        })).then(function (segTexts) {
+          return Vtt.alignSegmentCues(segTexts);
+        });
       }).catch(function () { return []; });
     });
 
+    // Each job resolves to one cue array (already aligned); merge across tracks.
     return Promise.all(jobs).then(function (results) {
-      // results is an array of (array of cue-arrays); flatten one level.
-      var flat = [];
-      results.forEach(function (r) { flat = flat.concat(r); });
-      return flat;
+      return Vtt.mergeCues(results);
     });
   }
 
@@ -115,8 +120,10 @@
   }
 
   function grabSubtitles() {
-    return cuesFromActiveFetch().then(function (activeArrays) {
-      var all = [].concat(cuesFromTextTracks(), cuesFromPassiveVtt(), activeArrays);
+    return cuesFromActiveFetch().then(function (activeCues) {
+      // cuesFromTextTracks() is an array-of-arrays (one per track); the passive
+      // and active sources are each a single aligned cue array.
+      var all = cuesFromTextTracks().concat([cuesFromPassiveVtt(), activeCues]);
       var merged = Vtt.mergeCues(all);
       return {
         count: merged.length,

@@ -33,7 +33,17 @@ Subtitles are gathered from **three** sources and merged (de-duplicated, sorted)
 1. The live `<video>.textTracks` cues.
 2. Passively intercepted `.vtt` segments seen while playing.
 3. An active walk of the HLS master → subtitle media playlist → all `.vtt`
-   segments (so you get the *full* track, not just the played part).
+   segments (so you get the *full* track, not just the played part). If the
+   track URI returns a single full `.vtt` instead of a playlist, that's parsed
+   directly.
+
+HLS chops a caption track into `.vtt` **segments**, each restarting its `LOCAL`
+cue times near `00:00` and carrying the real program time in an
+`X-TIMESTAMP-MAP=MPEGTS:…,LOCAL:…` header. `Vtt.alignSegmentCues` honors that
+map — shifting each segment by `(its offset − the smallest offset)` — so the
+segments land on one monotonic, non-overlapping timeline (dropping the encoder's
+constant PTS baseline so the track starts at ~`00:00`) instead of all collapsing
+onto the start. Without this the downloaded `.srt` timeline was wrong.
 
 **Live transcription** captures the **tab's audio output** (not the `<video>`
 element, which is silent when the media is cross-origin/protected as on Douyin):
