@@ -89,17 +89,36 @@ function renderTranscribeStatus(st) {
   }
 }
 
-function renderLive(s) {
-  var box = $('live-box');
-  $('btn-live-start').disabled = !!s.live || !!s.recording;
-  $('btn-live-stop').disabled = !s.live;
-  if (s.live) {
-    box.hidden = false;
-    box.textContent = s.liveText || '正在聆听…（首次需加载语音模型，请稍候）';
-    box.scrollTop = box.scrollHeight;
-  } else if (!box.textContent) {
-    box.hidden = true;
-  }
+// Live transcription state lives in the background service worker (it keeps
+// running while the popup is closed), so query it there, not in the content script.
+function bgSend(msg) {
+  return new Promise(function (resolve, reject) {
+    chrome.runtime.sendMessage(msg, function (resp) {
+      var err = chrome.runtime.lastError;
+      if (err) return reject(new Error(err.message));
+      resolve(resp);
+    });
+  });
+}
+
+function refreshLive() {
+  bgSend({ type: 'live-status' }).then(function (s) {
+    if (!s) return;
+    var box = $('live-box');
+    $('btn-live-start').disabled = !!s.active;
+    $('btn-live-stop').disabled = !s.active;
+    if (s.active) {
+      box.hidden = false;
+      box.textContent = s.text || '正在聆听…（首次需加载语音模型，请稍候）';
+      box.scrollTop = box.scrollHeight;
+    } else if (s.text) {
+      box.hidden = false;
+      box.textContent = s.text;
+    }
+    if (s.error) renderTranscribeStatus('error: ' + s.error);
+    else if (s.status && s.status.indexOf('done:') === 0) renderTranscribeStatus(s.status);
+    else if (s.active) renderTranscribeStatus('live: ' + (s.text ? '识别中…' : '正在聆听…'));
+  }).catch(function () {});
 }
 
 function refreshStatus() {
@@ -110,16 +129,14 @@ function refreshStatus() {
     $('st-videos').textContent = s.videos;
     $('st-masters').textContent = s.masters;
     $('st-vtt').textContent = s.vttSegments;
-    // While live transcription runs, the audio capture stream is busy.
-    $('btn-audio-start').disabled = !!s.recording || !!s.live;
+    $('btn-audio-start').disabled = !!s.recording;
     $('btn-audio-stop').disabled = !s.recording;
     if (s.recording) setMsg('正在录制音频…', 'ok');
-    renderLive(s);
-    renderTranscribeStatus(s.transcribeStatus);
-  }).catch(function (e) { setMsg(e.message, 'err'); });
+  }).catch(function (e) { /* content not ready on this tab; live still works */ });
+  refreshLive();
 }
 
-// Keep the transcribe status / live text fresh while the popup stays open.
+// Keep status / live text fresh while the popup stays open.
 setInterval(refreshStatus, 1000);
 
 $('btn-subs').addEventListener('click', function () {
@@ -171,23 +188,20 @@ $('btn-live-start').addEventListener('click', function () {
   setMsg('正在启动实时转写…');
   $('live-box').hidden = false;
   $('live-box').textContent = '正在聆听…（首次需加载语音模型，请稍候）';
+  $('btn-live-start').disabled = true;
+  $('btn-live-stop').disabled = false;
   activeTab().then(function (tab) {
-    return send(tab.id, { type: 'start-live', lang: $('opt-lang').value, model: $('opt-model').value });
+    // Live capture grabs the *tab's* audio output in the background worker, so
+    // it works even where the page protects the media (e.g. Douyin).
+    return bgSend({ type: 'live-start', tabId: tab.id, lang: $('opt-lang').value, model: $('opt-model').value });
   }).then(function (res) {
-    if (res && res.ok) {
-      setMsg('实时转写已开始，文字会随播放滚动出现。', 'ok');
-      $('btn-live-start').disabled = true;
-      $('btn-live-stop').disabled = false;
-    } else {
-      setMsg((res && res.error) || '无法开始实时转写。', 'err');
-    }
-  }).catch(function (e) { setMsg(e.message, 'err'); });
+    if (res && res.ok) setMsg('实时转写已开始，文字会随播放滚动出现。', 'ok');
+    else { setMsg((res && res.error) || '无法开始实时转写。', 'err'); $('btn-live-start').disabled = false; $('btn-live-stop').disabled = true; }
+  }).catch(function (e) { setMsg(e.message, 'err'); $('btn-live-start').disabled = false; $('btn-live-stop').disabled = true; });
 });
 
 $('btn-live-stop').addEventListener('click', function () {
-  activeTab().then(function (tab) {
-    return send(tab.id, { type: 'stop-live' });
-  }).then(function (res) {
+  bgSend({ type: 'live-stop' }).then(function (res) {
     if (res && res.ok) {
       setMsg('已停止，正在生成 .txt / .srt …', 'ok');
       $('btn-live-stop').disabled = true;

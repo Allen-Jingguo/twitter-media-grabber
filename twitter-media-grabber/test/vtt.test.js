@@ -48,6 +48,65 @@ H.test('mergeCues de-duplicates overlapping segments and sorts', function (t) {
   t.equal(merged.map(function (c) { return c.text; }), ['A', 'B', 'C']);
 });
 
+H.test('isVtt recognizes WebVTT and rejects m3u8 playlists', function (t) {
+  t.ok(Vtt.isVtt('WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhi') === true);
+  t.ok(Vtt.isVtt('﻿WEBVTT') === true, 'tolerates BOM');
+  t.ok(Vtt.isVtt('00:00:01.000 --> 00:00:02.000\nno header') === true, 'a bare cue still counts');
+  t.ok(Vtt.isVtt('#EXTM3U\n#EXTINF:6.0,\nseg0.vtt') === false, 'media playlist is not VTT');
+  t.ok(Vtt.isVtt('') === false);
+});
+
+H.test('timestampMapOffset reads MPEGTS/LOCAL in either order', function (t) {
+  t.equal(Vtt.timestampMapOffset('WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n'),
+    10000, '900000 ticks / 90 = 10000ms');
+  t.equal(Vtt.timestampMapOffset('WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:1440000'),
+    16000, 'order-independent');
+  t.equal(Vtt.timestampMapOffset('WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:990000,LOCAL:00:00:01.000'),
+    10000, 'subtracts LOCAL (11000 - 1000)');
+  t.equal(Vtt.timestampMapOffset('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi'), 0, 'no map -> 0');
+});
+
+H.test('alignSegmentCues places HLS segments on one monotonic timeline', function (t) {
+  // Two segments: each restarts LOCAL near 00:00 but carries an increasing
+  // MPEGTS. Naive parse+merge would sort "World" before "Hello" at ~00:00.
+  var seg1 = [
+    'WEBVTT',
+    'X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000',
+    '',
+    '00:00:01.000 --> 00:00:03.000',
+    'Hello'
+  ].join('\n');
+  var seg2 = [
+    'WEBVTT',
+    'X-TIMESTAMP-MAP=MPEGTS:1440000,LOCAL:00:00:00.000',
+    '',
+    '00:00:00.500 --> 00:00:02.000',
+    'World'
+  ].join('\n');
+  var cues = Vtt.alignSegmentCues([seg1, seg2]);
+  t.equal(cues.length, 2);
+  // baseline (10000ms) removed -> seg1 keeps its local times, seg2 shifts +6s.
+  t.equal(cues[0], { start: 1000, end: 3000, text: 'Hello' });
+  t.equal(cues[1], { start: 6500, end: 8000, text: 'World' }, 'second segment after the first');
+  t.ok(cues[1].start > cues[0].end, 'no overlap / correct order');
+});
+
+H.test('alignSegmentCues de-duplicates overlapping rolling segments', function (t) {
+  // Rolling captions: consecutive segments repeat the shared cue.
+  var a = 'WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n' +
+          '00:00:00.000 --> 00:00:02.000\nA\n\n00:00:02.000 --> 00:00:04.000\nB';
+  var b = 'WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000\n\n' +
+          '00:00:02.000 --> 00:00:04.000\nB\n\n00:00:04.000 --> 00:00:06.000\nC';
+  var cues = Vtt.alignSegmentCues([a, b]);
+  t.equal(cues.map(function (c) { return c.text; }), ['A', 'B', 'C']);
+});
+
+H.test('alignSegmentCues leaves a single map-less .vtt unchanged', function (t) {
+  var doc = 'WEBVTT\n\n00:00:05.000 --> 00:00:07.000\nlate caption';
+  t.equal(Vtt.alignSegmentCues([doc]), [{ start: 5000, end: 7000, text: 'late caption' }]);
+  t.equal(Vtt.alignSegmentCues([]), [], 'empty input -> empty');
+});
+
 H.test('toSrt / toVtt / toPlainText render expected output', function (t) {
   var cues = [
     { start: 0, end: 2000, text: 'Hello' },
