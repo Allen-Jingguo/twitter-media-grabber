@@ -189,7 +189,13 @@ async function transcribe(msg) {
       task: 'transcribe',
       // Stop Whisper looping on the same word ("much, much, much, …"): forbid
       // repeating any 3-token sequence during decoding.
-      no_repeat_ngram_size: 3
+      no_repeat_ngram_size: 3,
+      // Beam search instead of greedy decoding. Greedy commits to the locally
+      // most-likely token and so mis-hears homophones (e.g. Chinese 罪魁祸首 ->
+      // 最会祸首); beam search scores whole hypotheses, letting the
+      // contextually-correct word win. Offline transcription isn't latency
+      // sensitive, so use a wide beam for best accuracy.
+      num_beams: 5
     };
     if (language) opts.language = language;
     const out = await asr(pcm, opts);
@@ -319,7 +325,11 @@ async function liveTranscribeWindow(pcm, startMs) {
       chunk_length_s: 30,
       return_timestamps: true,
       task: 'transcribe',
-      no_repeat_ngram_size: 3
+      no_repeat_ngram_size: 3,
+      // A narrow beam improves accuracy (fewer homophone errors) while keeping
+      // per-window decode fast enough to stay real-time; the offline path above
+      // uses a wider beam since it isn't latency sensitive.
+      num_beams: 2
     };
     if (language) opts.language = language;
     const out = await asr(pcm, opts);
