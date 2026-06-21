@@ -5,7 +5,18 @@
  * the browser. Communication: background -> here ('offscreen-transcribe'),
  * here -> background ('transcribe-progress' / 'transcribe-result').
  */
-import { pipeline, env } from './vendor/transformers.min.js';
+import { pipeline, env, Tensor } from './vendor/transformers.min.js';
+
+// transformers.js logs a benign warning for every model file whose HTTP
+// response lacks a Content-Length header (true for files served from the
+// extension package): "Unable to determine content-length…". It only affects
+// the download-progress estimate, so filter out that single message to keep the
+// console readable; every other warning still logs normally.
+const origWarn = console.warn.bind(console);
+console.warn = (...args) => {
+  if (args.length && String(args[0]).includes('Unable to determine content-length from response headers')) return;
+  origWarn(...args);
+};
 
 const T = self.TMGTranscript;
 
@@ -25,7 +36,40 @@ const TARGET_RATE = 16000;
 env.allowLocalModels = true;
 env.allowRemoteModels = true;
 env.localModelPath = chrome.runtime.getURL('src/models/');
-env.useBrowserCache = true;
+
+// transformers.js caches every fetched model file in the Cache API, which only
+// supports http(s) request keys. Caching a model file loaded from our own
+// extension package (chrome-extension://…/src/models/) therefore throws
+// "Request scheme 'chrome-extension' is unsupported". Route caching through a
+// wrapper that transparently skips non-http(s) keys: remote Hugging Face
+// downloads are still cached across sessions, while bundled local models simply
+// aren't re-cached (they load instantly from disk anyway).
+const HTTP_KEY = /^https?:/i;
+const cacheKeyUrl = (request) => (typeof request === 'string' ? request : (request && request.url) || '');
+let realCachePromise = null;
+function openRealCache() {
+  if (!realCachePromise) {
+    realCachePromise = (typeof caches !== 'undefined' ? caches.open('transformers-cache') : Promise.resolve(null))
+      .catch(() => null);
+  }
+  return realCachePromise;
+}
+env.useBrowserCache = false;
+env.useCustomCache = true;
+env.customCache = {
+  async match(request) {
+    if (!HTTP_KEY.test(cacheKeyUrl(request))) return undefined;
+    const c = await openRealCache();
+    if (!c) return undefined;
+    try { return await c.match(request); } catch (e) { return undefined; }
+  },
+  async put(request, response) {
+    if (!HTTP_KEY.test(cacheKeyUrl(request))) return; // skip chrome-extension:// keys
+    const c = await openRealCache();
+    if (!c) return;
+    try { await c.put(request, response); } catch (e) {}
+  }
+};
 // Prefer the vendored ONNX wasm; if this env shape ever changes, ort falls
 // back to its default (CDN) wasm path, which our CSP also permits.
 const ortWasmEnv = env.backends && env.backends.onnx && env.backends.onnx.wasm;
@@ -68,6 +112,45 @@ function getAsr(tabId, modelId) {
   return asrPromises[id];
 }
 
+// This transformers.js build has no built-in spoken-language detection: running
+// a multilingual Whisper model without an explicit `language` makes it silently
+// "default to English (en)" (with a warning), which mangles non-English audio.
+// So when the user picks auto/mixed we detect the language the way Whisper does
+// internally — run a single decoder step from the start-of-transcript token and
+// read off the most probable <|lang|> token. Returns an ISO code (e.g. 'zh') or
+// null if detection isn't possible.
+async function detectLanguage(asr, pcm) {
+  const model = asr.model;
+  const gc = model && model.generation_config;
+  const langToId = gc && gc.lang_to_id;
+  const startId = gc && gc.decoder_start_token_id;
+  if (!langToId || startId == null || !asr.processor) return null;
+  const { input_features } = await asr.processor(pcm);
+  const decoder_input_ids = new Tensor('int64', [BigInt(startId)], [1, 1]);
+  const out = await model({ input_features, decoder_input_ids });
+  const logits = out && out.logits;
+  if (!logits || !logits.data) return null;
+  const data = logits.data;
+  const vocab = logits.dims[logits.dims.length - 1];
+  const base = (logits.dims[1] - 1) * vocab; // logits for the last (only) decoder position
+  let bestTok = null, bestVal = -Infinity;
+  for (const tok in langToId) {
+    const v = Number(data[base + langToId[tok]]);
+    if (v > bestVal) { bestVal = v; bestTok = tok; }
+  }
+  const m = bestTok && /<\|([a-z]+)\|>/i.exec(bestTok);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// Map the popup's language choice to a concrete language for Whisper. 'auto' and
+// 'mixed' trigger detection (detecting the dominant language also gives the best
+// result for code-switching audio); anything else is used as-is. Returns null
+// when detection isn't possible, in which case Whisper falls back to English.
+async function resolveLanguage(asr, pcm, lang) {
+  if (lang && lang !== 'auto' && lang !== 'mixed') return lang;
+  try { return await detectLanguage(asr, pcm); } catch (e) { return null; }
+}
+
 async function decodeToPcm16k(bytes) {
   const ctx = new AudioContext();
   try {
@@ -94,6 +177,10 @@ async function transcribe(msg) {
     report(tabId, 'loading-model');
     const asr = await getAsr(tabId, msg.model);
 
+    // Resolve auto/mixed to a concrete language so Whisper doesn't fall back to
+    // English (this build can't auto-detect during decoding).
+    const language = await resolveLanguage(asr, pcm, msg.lang);
+
     report(tabId, 'transcribing');
     const opts = {
       chunk_length_s: 30,
@@ -104,10 +191,7 @@ async function transcribe(msg) {
       // repeating any 3-token sequence during decoding.
       no_repeat_ngram_size: 3
     };
-    // Leave language unset for 'auto'/'mixed' so Whisper detects it per chunk
-    // (required for code-switching audio, e.g. Chinese mixed with English,
-    // Japanese, Korean or any other supported language).
-    if (msg.lang && msg.lang !== 'auto' && msg.lang !== 'mixed') opts.language = msg.lang;
+    if (language) opts.language = language;
     const out = await asr(pcm, opts);
 
     // Belt-and-braces cleanup of any repetition the decoder still produced, so
@@ -221,13 +305,23 @@ async function liveTranscribeWindow(pcm, startMs) {
   if (!live) return;
   try {
     const asr = await getAsr(live.tabId, live.model);
+    // Detect language once (on the first window) and reuse it for the session so
+    // every window decodes consistently instead of defaulting to English.
+    let language = live.lang;
+    if (language === 'auto' || language === 'mixed') {
+      if (!live.langDetected) {
+        live.langDetected = true;
+        live.detectedLang = await resolveLanguage(asr, pcm, live.lang);
+      }
+      language = live.detectedLang;
+    }
     const opts = {
       chunk_length_s: 30,
       return_timestamps: true,
       task: 'transcribe',
       no_repeat_ngram_size: 3
     };
-    if (live.lang && live.lang !== 'auto' && live.lang !== 'mixed') opts.language = live.lang;
+    if (language) opts.language = language;
     const out = await asr(pcm, opts);
     if (!live) return;
     live.results++;
@@ -273,32 +367,53 @@ async function liveStart(msg) {
   // Tab capture re-routes the tab's audio into our stream; play it back so the
   // user still hears the video.
   source.connect(ac.destination);
-  const proc = ac.createScriptProcessor(4096, 1, 1);
+
+  // Pull mono PCM blocks off the stream with an AudioWorklet — the modern,
+  // non-deprecated replacement for ScriptProcessorNode. The worklet posts
+  // fixed-size Float32 blocks back here; a zero-gain sink keeps the node in the
+  // render graph without adding audible output.
+  try {
+    await ac.audioWorklet.addModule(chrome.runtime.getURL('src/audio-capture-worklet.js'));
+  } catch (e) {
+    try { stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+    try { ac.close(); } catch (_) {}
+    chrome.runtime.sendMessage({
+      type: 'live-progress', error: '无法初始化音频处理器：' + String((e && e.message) || e)
+    }).catch(() => {});
+    return;
+  }
+  const node = new AudioWorkletNode(ac, 'tmg-capture', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    channelCount: 1,
+    channelCountMode: 'explicit',
+    channelInterpretation: 'speakers'
+  });
   const sink = ac.createGain();
   sink.gain.value = 0;
-  source.connect(proc);
-  proc.connect(sink);
+  source.connect(node);
+  node.connect(sink);
   sink.connect(ac.destination);
 
   const rate = ac.sampleRate;
   live = {
-    stream, ac, source, proc, sink, rate,
+    stream, ac, source, node, sink, rate,
     winSamples: Math.round(LIVE_WINDOW_SEC * rate),
     hopSamples: Math.round(LIVE_HOP_SEC * rate),
     firstSamples: Math.round(3 * rate),
     // Retained audio buffer (list of blocks) + absolute-sample bookkeeping.
     buf: [], bufStartSample: 0, bufLen: 0, nextStart: 0, firstDone: false,
     lang: msg.lang, model: msg.model, tabId: msg.tabId,
+    detectedLang: null, langDetected: false,
     queue: Promise.resolve(), text: '', cues: [], cursorMs: 0,
     maxLevel: 0, windows: 0, results: 0, lastError: '', stopping: false
   };
 
-  proc.onaudioprocess = (e) => {
+  node.port.onmessage = (e) => {
     if (!live || live.stopping) return;
-    const input = e.inputBuffer.getChannelData(0);
-    const n = input.length;
-    const copy = new Float32Array(n);
-    copy.set(input);
+    const copy = e.data;            // Float32Array block (ownership transferred from the worklet)
+    const n = copy.length;
     for (let k = 0; k < n; k += 64) { const a = copy[k] < 0 ? -copy[k] : copy[k]; if (a > live.maxLevel) live.maxLevel = a; }
     live.buf.push(copy);
     live.bufLen += n;
@@ -319,13 +434,13 @@ async function liveStop() {
   const cur = live;
   if (!cur || cur.stopping) return;
   cur.stopping = true;
-  try { cur.proc.onaudioprocess = null; } catch (e) {}
+  try { cur.node.port.onmessage = null; } catch (e) {}
   // Flush whatever audio is left after the last full window (a partial tail).
   while (cur.bufStartSample + cur.bufLen - cur.nextStart >= Math.round(cur.rate * 0.3)) {
     liveScheduleWindow(true);
   }
   await cur.queue.catch(() => {});
-  try { cur.proc.disconnect(); cur.source.disconnect(); cur.sink.disconnect(); } catch (e) {}
+  try { cur.node.disconnect(); cur.source.disconnect(); cur.sink.disconnect(); } catch (e) {}
   try { cur.stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
   try { cur.ac.close(); } catch (e) {}
   const ordered = cur.cues.slice().sort((a, b) => a.start - b.start);
