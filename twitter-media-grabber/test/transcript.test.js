@@ -172,12 +172,43 @@ H.test('collapseRepeats keeps short, legitimate repeats', function (t) {
   t.equal(T.collapseRepeats(null), '');
 });
 
+H.test('collapseRepeats squashes CJK loops with no word spaces', function (t) {
+  // Chinese has no spaces, so a Whisper loop is one giant token the old
+  // whitespace pass could never split — the bug from the Douyin transcript.
+  var loop = '以5亿美元的预算来算'.repeat(80);
+  t.equal(T.collapseRepeats(loop), '以5亿美元的预算来算', 'long CJK loop -> one copy');
+
+  // A loop embedded in real prose keeps the surrounding speech intact.
+  t.equal(
+    T.collapseRepeats('本质上是相对独立的服务器' + '一个是H100'.repeat(200)),
+    '本质上是相对独立的服务器一个是H100',
+    'loop collapses, prose before it survives'
+  );
+
+  // Pervasive doubled/tripled phrases (also seen in the transcript) collapse.
+  t.equal(T.collapseRepeats('更是因为它的参数也大到惊人'.repeat(3)), '更是因为它的参数也大到惊人');
+  t.equal(T.collapseRepeats('另外一家增长强劲'.repeat(2)), '另外一家增长强劲');
+});
+
+H.test('collapseRepeats keeps legitimate short CJK reduplication', function (t) {
+  // Real Chinese words double single characters; these must not be collapsed.
+  t.equal(T.collapseRepeats('看看'), '看看');
+  t.equal(T.collapseRepeats('谢谢大家刚刚的提问'), '谢谢大家刚刚的提问');
+  // A real sentence with incidental repeated characters stays intact.
+  var s = '大模型完成训练之后就进入了我们的电脑和手机';
+  t.equal(T.collapseRepeats(s), s);
+});
+
 H.test('isDegenerateText flags hallucinated windows, spares real speech', function (t) {
   t.ok(T.isDegenerateText(new Array(50).fill('much').join(' ')), 'one token x50 is degenerate');
   t.ok(T.isDegenerateText('B B B B B B B B'), 'few distinct tokens, many repeats');
   t.ok(!T.isDegenerateText('The Python program runs creates a result and then passes this.'),
     'a normal sentence is not degenerate');
   t.ok(!T.isDegenerateText('much much'), 'too short to judge -> not degenerate');
+  // CJK loops have no spaces; counting characters individually still catches them.
+  t.ok(T.isDegenerateText('一个是H100'.repeat(20)), 'a Chinese loop is degenerate');
+  t.ok(!T.isDegenerateText('大模型完成训练之后就进入了我们的电脑和手机'),
+    'a normal Chinese sentence is not degenerate');
 });
 
 H.test('sanitizeCues cleans repetition and drops emptied cues', function (t) {
