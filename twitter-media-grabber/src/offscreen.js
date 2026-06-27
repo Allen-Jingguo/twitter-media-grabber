@@ -79,12 +79,35 @@ const ortWasmEnv = env.backends && env.backends.onnx && env.backends.onnx.wasm;
 if (ortWasmEnv) {
   ortWasmEnv.wasmPaths = chrome.runtime.getURL('src/vendor/');
   // Extension pages are not crossOriginIsolated, so SharedArrayBuffer
-  // threading is unavailable; force single-threaded WASM.
+  // threading is unavailable; force single-threaded WASM. (Only matters for the
+  // WASM fallback below — WebGPU runs the model on the GPU instead.)
   ortWasmEnv.numThreads = 1;
 }
 
-// One pipeline per model id (a session sticks to one model, but caching per id
-// means switching models in the popup doesn't reload an already-loaded one).
+// WebGPU runs Whisper's encoder/decoder on the GPU and is typically several
+// times faster than single-threaded WASM — the difference between a 30-minute
+// clip taking many minutes and finishing quickly. Probe once (presence of
+// navigator.gpu isn't enough; an adapter must actually be obtainable) and cache
+// the result. Any failure falls back to WASM so the extension still works
+// everywhere.
+let webgpuProbe = null;
+function webgpuAvailable() {
+  if (webgpuProbe == null) {
+    webgpuProbe = (async () => {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.gpu) return false;
+        const adapter = await navigator.gpu.requestAdapter();
+        return !!adapter;
+      } catch (e) { return false; }
+    })();
+  }
+  return webgpuProbe;
+}
+
+// One pipeline per model id, each resolving to { asr, device }. A session sticks
+// to one model, but caching per id means switching models in the popup doesn't
+// reload an already-loaded one. `device` lets callers tune beam width to the
+// backend that actually ended up running.
 const asrPromises = {};
 
 function report(tabId, stage, detail) {
@@ -96,18 +119,40 @@ function report(tabId, stage, detail) {
   }).catch(() => {});
 }
 
+async function buildAsr(id, tabId) {
+  const progress_callback = (p) => {
+    if (p && p.status === 'progress' && p.file) {
+      report(tabId, 'downloading-model', p.file + ' ' + Math.round(p.progress || 0) + '%');
+    }
+  };
+  if (await webgpuAvailable()) {
+    try {
+      // fp16 encoder + q4 decoder is the configuration the official
+      // whisper-webgpu demo uses for onnx-community models: small download, fast
+      // decode. If a model lacks those weights the build throws and we fall
+      // through to WASM below.
+      const asr = await pipeline('automatic-speech-recognition', id, {
+        device: 'webgpu',
+        dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' },
+        progress_callback
+      });
+      return { asr, device: 'webgpu' };
+    } catch (e) {
+      report(tabId, 'loading-model', 'WebGPU 不可用，回退到 WASM');
+    }
+  }
+  const asr = await pipeline('automatic-speech-recognition', id, {
+    device: 'wasm',
+    dtype: 'q8',
+    progress_callback
+  });
+  return { asr, device: 'wasm' };
+}
+
 function getAsr(tabId, modelId) {
   const id = ALLOWED_MODELS[modelId] ? modelId : DEFAULT_MODEL;
   if (!asrPromises[id]) {
-    asrPromises[id] = pipeline('automatic-speech-recognition', id, {
-      dtype: 'q8',
-      device: 'wasm',
-      progress_callback: (p) => {
-        if (p && p.status === 'progress' && p.file) {
-          report(tabId, 'downloading-model', p.file + ' ' + Math.round(p.progress || 0) + '%');
-        }
-      }
-    }).catch((e) => {
+    asrPromises[id] = buildAsr(id, tabId).catch((e) => {
       asrPromises[id] = null; // allow retry after a failed model download
       throw e;
     });
@@ -169,6 +214,14 @@ async function decodeToPcm16k(bytes) {
   }
 }
 
+// Long recordings (30+ min) are transcribed in bounded segments rather than one
+// giant asr() call: it keeps the per-call working set small, lets us report
+// real progress (otherwise a long clip looks frozen for minutes), and on the
+// WASM fallback keeps each call tractable. Segments overlap slightly so a word
+// straddling a boundary survives; the overlap is then deduped by cursor.
+const BATCH_SEGMENT_SEC = 300; // 5 min per inference call
+const BATCH_OVERLAP_SEC = 1;   // shared audio between consecutive segments
+
 async function transcribe(msg) {
   const tabId = msg.tabId;
   try {
@@ -178,34 +231,63 @@ async function transcribe(msg) {
     const durationMs = Math.round((pcm.length / TARGET_RATE) * 1000);
 
     report(tabId, 'loading-model');
-    const asr = await getAsr(tabId, msg.model);
+    const { asr, device } = await getAsr(tabId, msg.model);
 
     // Resolve auto/mixed to a concrete language so Whisper doesn't fall back to
     // English (this build can't auto-detect during decoding).
     const language = await resolveLanguage(asr, pcm, msg.lang);
 
-    report(tabId, 'transcribing');
-    const opts = {
-      chunk_length_s: 30,
-      stride_length_s: 5,
-      return_timestamps: true,
-      task: 'transcribe',
-      // Stop Whisper looping on the same word ("much, much, much, …"): forbid
-      // repeating any 3-token sequence during decoding.
-      no_repeat_ngram_size: 3,
-      // Beam search instead of greedy decoding. Greedy commits to the locally
-      // most-likely token and so mis-hears homophones (e.g. Chinese 罪魁祸首 ->
-      // 最会祸首); beam search scores whole hypotheses, letting the
-      // contextually-correct word win. Offline transcription isn't latency
-      // sensitive, so use a wide beam for best accuracy.
-      num_beams: 5
-    };
-    if (language) opts.language = language;
-    const out = await asr(pcm, opts);
+    // Beam search scores whole hypotheses instead of greedily committing to the
+    // locally most-likely token, so it mis-hears far fewer homophones (e.g.
+    // Chinese 罪魁祸首 -> 最会祸首). WebGPU decodes fast enough to keep a wide
+    // beam regardless of length; the slower WASM fallback narrows the beam on
+    // long audio so a 30-minute clip still finishes in reasonable time.
+    const beams = device === 'webgpu' ? 5 : (pcm.length > TARGET_RATE * 120 ? 2 : 5);
+
+    const segSamples = BATCH_SEGMENT_SEC * TARGET_RATE;
+    const overlapSamples = BATCH_OVERLAP_SEC * TARGET_RATE;
+    const allChunks = [];
+    const textParts = [];
+    let cursorSec = 0;
+
+    for (let off = 0; off < pcm.length; off += segSamples) {
+      const end = Math.min(pcm.length, off + segSamples + overlapSamples);
+      const seg = pcm.subarray(off, end);
+      const segStartSec = off / TARGET_RATE;
+      report(tabId, 'transcribing', Math.round((off / pcm.length) * 100) + '%');
+
+      const opts = {
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        return_timestamps: true,
+        task: 'transcribe',
+        // Stop Whisper looping on the same word ("much, much, much, …"): forbid
+        // repeating any 3-token sequence during decoding.
+        no_repeat_ngram_size: 3,
+        num_beams: beams
+      };
+      if (language) opts.language = language;
+      const out = await asr(seg, opts);
+
+      // Shift this segment's timestamps onto the absolute timeline and drop any
+      // chunk already covered by the previous segment's overlap.
+      for (const ch of (out.chunks || [])) {
+        const ts = ch.timestamp || [];
+        if (ts[0] == null) continue;
+        const start = ts[0] + segStartSec;
+        const chEnd = ts[1] == null ? null : ts[1] + segStartSec;
+        if (off > 0 && start < cursorSec - 0.25) continue; // overlap duplicate
+        allChunks.push({ timestamp: [start, chEnd], text: ch.text });
+        if (chEnd != null && chEnd > cursorSec) cursorSec = chEnd;
+        else if (chEnd == null && start > cursorSec) cursorSec = start;
+      }
+      const segText = T.collapseRepeats(out.text);
+      if (segText) textParts.push(segText);
+    }
 
     // Belt-and-braces cleanup of any repetition the decoder still produced, so
     // both the .txt (text) and .srt (chunks) are free of hallucination loops.
-    const cleanChunks = (out.chunks || [])
+    const cleanChunks = allChunks
       .map((ch) => ({ timestamp: ch.timestamp, text: T.collapseRepeats(ch.text) }))
       .filter((ch) => ch.text);
 
@@ -213,7 +295,7 @@ async function transcribe(msg) {
       type: 'transcribe-result',
       tabId: tabId,
       ok: true,
-      text: T.collapseRepeats(out.text),
+      text: T.collapseRepeats(textParts.join(' ')),
       chunks: cleanChunks,
       durationMs: durationMs
     }).catch(() => {});
@@ -313,7 +395,7 @@ function liveScheduleWindow(force) {
 async function liveTranscribeWindow(pcm, startMs) {
   if (!live) return;
   try {
-    const asr = await getAsr(live.tabId, live.model);
+    const { asr, device } = await getAsr(live.tabId, live.model);
     // Detect language once (on the first window) and reuse it for the session so
     // every window decodes consistently instead of defaulting to English.
     let language = live.lang;
@@ -329,12 +411,13 @@ async function liveTranscribeWindow(pcm, startMs) {
       return_timestamps: true,
       task: 'transcribe',
       no_repeat_ngram_size: 3,
-      // A narrow beam improves accuracy (fewer homophone errors) while keeping
-      // per-window decode fast enough to stay real-time; the offline path above
-      // uses a wider beam since it isn't latency sensitive. The large model's
-      // encoder is already heavy on WASM, so fall back to greedy for it in live
-      // mode to avoid lagging behind real-time.
-      num_beams: /large/.test(live.model || '') ? 1 : 2
+      // A beam improves accuracy (fewer homophone errors) but costs decode time
+      // that live mode can't spare. WebGPU has the headroom for a slightly wider
+      // beam and still stays real-time; the slower WASM path keeps it narrow,
+      // and the heavy large model decodes greedily on WASM to avoid lagging.
+      num_beams: device === 'webgpu'
+        ? (/large/.test(live.model || '') ? 2 : 3)
+        : (/large/.test(live.model || '') ? 1 : 2)
     };
     if (language) opts.language = language;
     const out = await asr(pcm, opts);

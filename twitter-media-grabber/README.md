@@ -170,9 +170,15 @@ timestamp, merge and serialization logic.
 - Auto-generated/burned-in captions (pixels in the video) cannot be extracted.
 - **Transcription** defaults to `whisper-base`; pick `tiny` (faster) or `small`
   (most accurate) in the popup. Accuracy on noisy audio or heavy accents is
-  limited. Inference is single-threaded WASM, expect roughly real-time speed on a
-  modern laptop. The ONNX runtime WASM backend is vendored in `src/vendor/`
-  so the extension stays MV3-compliant (no remote code).
+  limited. Inference runs on **WebGPU** when the browser/GPU supports it
+  (typically several times faster than real time), and automatically falls back
+  to single-threaded WASM (~real-time on a modern laptop) otherwise. The ONNX
+  runtime WASM backend is vendored in `src/vendor/` so the extension stays
+  MV3-compliant (no remote code).
+- **Long recordings (30+ min)** are transcribed in bounded ~5-minute segments
+  with overlap dedupe, so memory stays small and the popup shows a running
+  progress percentage instead of appearing frozen. Live (real-time) mode streams
+  and trims its buffer as it goes, so it handles unlimited duration.
 
 > The vendored ONNX files **must match the onnxruntime-web version bundled in
 > `transformers.min.js`** (currently `1.24.3`) — the single-threaded path needs
