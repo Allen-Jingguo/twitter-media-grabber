@@ -116,13 +116,117 @@
       .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
   }
 
+  // Longest repeated unit (in characters / tokens) we hunt for. Whisper loop
+  // units are short phrases; a generous cap keeps the scan below O(n*CAP).
+  var MAX_CHAR_UNIT = 200;
+  var MAX_SEQ_UNIT = 8;
+
+  // True when s[a..a+len) === s[b..b+len) compared char-by-char (no allocation).
+  function charsEqual(s, a, b, len) {
+    for (var k = 0; k < len; k++) {
+      if (s.charCodeAt(a + k) !== s.charCodeAt(b + k)) return false;
+    }
+    return true;
+  }
+
+  /*
+   * Collapse adjacent repeats of a substring *inside one whitespace-free token*.
+   * CJK scripts (Chinese/Japanese/…) have no word spaces, so a Whisper loop in
+   * Chinese is a single token — "以5亿…来算以5亿…来算…" — that the whitespace
+   * token pass below can never split. We scan the token and, wherever a unit of
+   * length p repeats r times back-to-back, keep a single copy. A long loop
+   * (r > threshold) always collapses; a mere double/triple only collapses when
+   * the unit is a real multi-char phrase (>= 4 chars), so legitimate Chinese
+   * reduplication ("看看", "刚刚", "哈哈") survives untouched.
+   */
+  function collapseAdjacentRepeats(token, threshold) {
+    var n = token.length;
+    if (n < 4) return token; // too short to hold a phrase loop
+    var out = '';
+    var i = 0;
+    while (i < n) {
+      var maxP = Math.min(MAX_CHAR_UNIT, (n - i) >> 1);
+      var bestP = 0, bestR = 0, bestCover = 0;
+      for (var p = 1; p <= maxP; p++) {
+        // Cheap reject: the unit can only repeat if its first char recurs.
+        if (token.charCodeAt(i) !== token.charCodeAt(i + p)) continue;
+        var r = 1;
+        while (i + (r + 1) * p <= n && charsEqual(token, i, i + r * p, p)) r++;
+        var cover = p * r;
+        // Prefer the period that tiles the longest run (the true loop period),
+        // not a coincidental short prefix that happens to repeat once.
+        if (r >= 2 && cover > bestCover) { bestCover = cover; bestP = p; bestR = r; }
+      }
+      var collapse = bestR >= 2 && (bestR > threshold || bestP >= 4);
+      if (collapse) {
+        out += token.substr(i, bestP);
+        i += bestP * bestR;
+      } else {
+        out += token.charAt(i);
+        i++;
+      }
+    }
+    return out;
+  }
+
+  // True when the token runs tokens[a..a+len) and tokens[b..b+len) are equal
+  // under normToken (so "this," repeats with "this.").
+  function tokenSeqEqual(tokens, a, b, len) {
+    for (var k = 0; k < len; k++) {
+      if (normToken(tokens[a + k]) !== normToken(tokens[b + k])) return false;
+    }
+    return true;
+  }
+
+  /*
+   * Collapse repeated token *sequences* in a token list. A single-token run
+   * ("much much much …") collapses only when longer than `threshold` so genuine
+   * short repeats ("no no no") survive; a multi-token phrase echoed back-to-back
+   * ("A B C A B C" — common when a space-separated clause is re-emitted)
+   * collapses from two copies. Returns the cleaned token array.
+   */
+  function collapseTokenSequenceRepeats(tokens, threshold) {
+    var n = tokens.length;
+    var out = [];
+    var i = 0;
+    while (i < n) {
+      var maxP = Math.min(MAX_SEQ_UNIT, (n - i) >> 1);
+      var bestP = 0, bestR = 0, bestCover = 0;
+      for (var p = 1; p <= maxP; p++) {
+        if (normToken(tokens[i]) !== normToken(tokens[i + p])) continue;
+        var r = 1;
+        while (i + (r + 1) * p <= n && tokenSeqEqual(tokens, i, i + r * p, p)) r++;
+        var cover = p * r;
+        if (r >= 2 && cover > bestCover) { bestCover = cover; bestP = p; bestR = r; }
+      }
+      // Single tokens need to exceed the threshold; phrase echoes collapse at 2x.
+      var collapse = bestR >= 2 && (bestP > 1 ? true : bestR > threshold);
+      if (collapse) {
+        for (var u = 0; u < bestP; u++) {
+          var tok = tokens[i + u];
+          // Keep one clean copy, stripping trailing punctuation off the last
+          // token of the kept unit (so "this," -> "this").
+          if (u === bestP - 1) tok = tok.replace(/[^\p{L}\p{N}]+$/u, '') || tok;
+          out.push(tok);
+        }
+        i += bestP * bestR;
+      } else {
+        out.push(tokens[i]);
+        i++;
+      }
+    }
+    return out;
+  }
+
   /*
    * Whisper loops on near-silent / low-information audio and emits the same
-   * token hundreds of times ("much, much, much, …" or hyphen-joined "B-B-B-B").
-   * collapseRepeats squashes any run of the same token longer than `threshold`
-   * down to a single clean copy, while leaving genuine short repeats ("no no
-   * no") intact. Pure string -> string so it can be unit-tested and reused for
-   * both the batch result and each live window.
+   * phrase many times. In English the repeats are whitespace-separated tokens
+   * ("much, much, much, …"); in Chinese they have no spaces at all, so the loop
+   * is one giant token ("以5亿…来算以5亿…来算…"). collapseRepeats squashes both:
+   * first within-token (CJK), then across the hyphen form ("B-B-B-B"), then over
+   * whole token sequences (English words / echoed phrases). Genuine short
+   * repeats ("no no no", "看看") are left intact. Pure string -> string so it
+   * can be unit-tested and reused for both the batch result and each live window.
    */
   function collapseRepeats(text, opts) {
     if (text == null) return '';
@@ -131,23 +235,12 @@
     var s = String(text);
     // Hyphen-joined single-token repeats: "B-B-B-B" / "B - B - B" -> "B".
     s = s.replace(/([^\s-]+)(?:\s*-\s*\1){2,}/giu, '$1');
-    var tokens = s.split(/\s+/).filter(Boolean);
-    var out = [];
-    var i = 0;
-    while (i < tokens.length) {
-      var key = normToken(tokens[i]);
-      var j = i + 1;
-      while (key && j < tokens.length && normToken(tokens[j]) === key) j++;
-      if (j - i > threshold) {
-        // Degenerate loop: keep one copy, stripped of trailing punctuation.
-        var clean = tokens[i].replace(/[^\p{L}\p{N}]+$/u, '');
-        out.push(clean || tokens[i]);
-      } else {
-        for (var m = i; m < j; m++) out.push(tokens[m]);
-      }
-      i = j;
-    }
-    return out.join(' ').trim();
+    // Collapse no-space loops living inside each whitespace token (CJK), then
+    // collapse repeated token sequences (English words and echoed phrases).
+    var tokens = s.split(/\s+/).filter(Boolean).map(function (tok) {
+      return collapseAdjacentRepeats(tok, threshold);
+    });
+    return collapseTokenSequenceRepeats(tokens, threshold).join(' ').trim();
   }
 
   /*
@@ -160,7 +253,14 @@
     opts = opts || {};
     var minTokens = opts.minTokens == null ? 6 : opts.minTokens;
     var maxUniqueRatio = opts.maxUniqueRatio == null ? 0.25 : opts.maxUniqueRatio;
-    var toks = String(text == null ? '' : text).toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    // Count each CJK character as its own token (those scripts have no word
+    // spaces, so a whole repeated phrase would otherwise read as one token and
+    // dodge the uniqueness check); Latin/digit runs stay whole words. Padding
+    // CJK chars with spaces keeps the \p{L}+ run from swallowing them (CJK
+    // ideographs are also \p{L}).
+    var toks = String(text == null ? '' : text).toLowerCase()
+      .replace(/[㐀-鿿぀-ヿ가-힯]/g, ' $& ')
+      .match(/[\p{L}\p{N}]+/gu) || [];
     if (toks.length < minTokens) return false;
     var uniq = Object.create(null);
     for (var i = 0; i < toks.length; i++) uniq[toks[i]] = 1;
