@@ -191,7 +191,10 @@
       if (state.transcribe) sendForTranscription(blob, type);
     };
     try {
-      rec.start();
+      // Flush a chunk every few seconds (timeslice) instead of buffering the
+      // whole recording into a single Blob at stop — this keeps memory bounded
+      // for long (30+ min) captures.
+      rec.start(5000);
     } catch (e) {
       return { ok: false, error: '录制启动失败（音频可能受跨域保护）：' + e.message };
     }
@@ -290,7 +293,9 @@
         'decoding': '解码音频…',
         'loading-model': '加载语音模型…',
         'downloading-model': '下载模型 ' + (msg.detail || ''),
-        'transcribing': '识别中…'
+        // Long clips are transcribed in segments, so show the running percentage
+        // instead of a static label that looks frozen for minutes.
+        'transcribing': '识别中…' + (msg.detail ? ' ' + msg.detail : '')
       };
       state.transcribeStatus = 'working: ' + (stages[msg.stage] || msg.stage);
       return;

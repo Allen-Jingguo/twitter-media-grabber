@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Video Media Grabber",
-  "version": "1.4.0",
-  "description": "Grab audio and subtitles from any website's video, and transcribe speech to text locally (Whisper) — real-time live transcription via tab-audio capture (works on protected players like Douyin), selectable model, and mixed Chinese/English support.",
+  "version": "1.5.0",
+  "description": "Grab audio and subtitles from any website's video, and transcribe speech to text locally (Whisper) — GPU-accelerated (WebGPU) with WASM fallback, segmented processing for long (30+ min) recordings, real-time live transcription via tab-audio capture (works on protected players like Douyin), selectable model, and mixed Chinese/English support.",
   "permissions": ["activeTab", "scripting", "downloads", "offscreen", "tabCapture", "tabs", "nativeMessaging"],
   "host_permissions": [
     "http://*/*",
