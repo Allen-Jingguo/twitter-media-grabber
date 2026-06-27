@@ -26,7 +26,7 @@ Most sites (including Twitter/X) play video over **HLS**. The extension's parts:
 | `src/inject.js` | MAIN | Patches `fetch`/`XMLHttpRequest` to observe the player's own traffic and discover the master `.m3u8` playlist and rolling `.vtt` caption segments. |
 | `src/content.js` | ISOLATED | Receives those discoveries, records `<video>` audio clips (`captureStream()` + `MediaRecorder`), actively fetches subtitle segments from HLS, merges/dedupes, and triggers downloads. |
 | `src/popup.{html,js,css}` | — | UI: status, subtitle format picker, audio record/stop, transcribe toggle + language/model, and live-transcription start/stop with a streaming text box. |
-| `src/background.js` | service worker | Owns the offscreen document; routes batch transcription; drives the live session (`tabCapture.getMediaStreamId`, keeps live state for the popup to poll, saves `.txt`/`.srt` via `chrome.downloads`). |
+| `src/background.js` | service worker | Owns the offscreen document; routes batch transcription; can hand `large-v3` jobs to the optional native messaging host; drives the live session (`tabCapture.getMediaStreamId`, keeps live state for the popup to poll, saves `.txt`/`.srt` via `chrome.downloads`). |
 | `src/offscreen.html/.js` | offscreen | Runs Whisper (`onnx-community/whisper-{tiny,base,small}`, q8; base default) via vendored transformers.js + ONNX WASM. Also captures **tab audio** (`getUserMedia` tab source) for live transcription and slices it into windows. |
 
 Subtitles are gathered from **three** sources and merged (de-duplicated, sorted):
@@ -101,6 +101,22 @@ Then reload the extension. `src/offscreen.js` sets `env.localModelPath` to
 downloaded still fall back to huggingface.co. The weights are git-ignored
 (hundreds of MB; some `.onnx` exceed GitHub's 100 MB file limit), so they live
 only in your local checkout.
+
+## Native large-v3 (optional)
+
+The popup also offers `large-v3` through a local Python/OpenAI Whisper native
+messaging host. This is useful when you want the highest-accuracy model and can
+run it on local GPU/CPU outside the browser sandbox.
+
+From the repository root:
+
+```bash
+python3 -m pip install -U openai-whisper torch
+bash tools/install_native_host.sh
+```
+
+If your unpacked extension ID differs from the default in the install script,
+edit `EXT_ID` first. See `tools/README.md` for details.
 
 ## Usage
 

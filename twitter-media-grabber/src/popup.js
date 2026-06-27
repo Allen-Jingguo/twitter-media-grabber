@@ -132,6 +132,9 @@ function refreshStatus() {
     $('btn-audio-start').disabled = !!s.recording;
     $('btn-audio-stop').disabled = !s.recording;
     if (s.recording) setMsg('正在录制音频…', 'ok');
+    renderTranscribeStatus(s.transcribeStatus);
+    var box = $('transcript-box');
+    if (s.transcribeText) { box.textContent = s.transcribeText; box.hidden = false; box.scrollTop = box.scrollHeight; }
   }).catch(function (e) { /* content not ready on this tab; live still works */ });
   refreshLive();
 }

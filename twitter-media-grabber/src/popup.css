@@ -55,6 +55,20 @@ button:disabled { opacity: .5; cursor: default; }
 .msg.err { color: #f4727c; }
 .hint { margin: 0 0 8px; color: #8b98a5; font-size: 12px; }
 .hint b { color: #cfd9e1; }
+.transcript-box {
+  margin-top: 8px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: #15202b;
+  border: 1px solid #38444d;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #e7e9ea;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .livebox {
   margin-top: 8px;
   max-height: 140px;

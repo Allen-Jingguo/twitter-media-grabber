@@ -16,6 +16,8 @@
 'use strict';
 
 var OFFSCREEN_URL = 'src/offscreen.html';
+var NATIVE_HOST = 'com.tmg.whisper';
+var LARGE_V3_MODEL = 'onnx-community/whisper-large-v3';
 
 // Snapshot of the live session for the popup to poll (the popup may be closed
 // while transcription runs, so state lives here, not in the popup).
@@ -116,6 +118,29 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   if (msg.type === 'transcribe-audio') {
     var tabId = sender.tab && sender.tab.id;
+    if (msg.model === LARGE_V3_MODEL) {
+      // Route large-v3 to native messaging (Python whisper, uses MPS/GPU).
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, {
+        b64: msg.b64,
+        model: 'large-v3',
+        lang: msg.lang
+      }).then(function (resp) {
+        if (tabId != null) chrome.tabs.sendMessage(tabId, {
+          type: 'transcribe-result',
+          ok: resp && resp.ok !== false,
+          text: resp && resp.text || '',
+          chunks: (resp && resp.chunks) || [],
+          error: resp && resp.error
+        }).catch(function () {});
+      }).catch(function (e) {
+        if (tabId != null) chrome.tabs.sendMessage(tabId, {
+          type: 'transcribe-result', ok: false,
+          error: '本地模型转写失败：' + String((e && e.message) || e)
+        }).catch(function () {});
+      });
+      return;
+    }
+    // All other models: WASM in offscreen document.
     ensureOffscreen().then(function () {
       return chrome.runtime.sendMessage({
         type: 'offscreen-transcribe',

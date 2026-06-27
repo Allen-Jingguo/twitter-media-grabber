@@ -69,11 +69,13 @@
         <option value="onnx-community/whisper-base" selected>base · 较准 · 中英混合（~80MB）</option>
         <option value="onnx-community/whisper-small">small · 更准 · 较慢（~250MB）</option>
         <option value="onnx-community/whisper-large-v3-turbo">large-v3-turbo · 最准 · 中英多语种最佳（~400MB，慢，首次需下载）</option>
+        <option value="onnx-community/whisper-large-v3">large-v3 ⭐ 本地GPU · 最强精度 · 需要本地安装（见 tools/README.md）</option>
       </select>
     </label>
     <button id="btn-audio-start" class="primary">开始录制音频</button>
     <button id="btn-audio-stop" class="danger" disabled>停止 · 下载 · 转写</button>
     <div id="st-transcribe" class="tstatus"></div>
+    <div id="transcript-box" class="transcript-box" hidden></div>
   </section>
 
   <section class="card">

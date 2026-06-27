@@ -24,7 +24,8 @@
     transcribe: false,     // convert recorded audio to text after stop?
     lang: 'auto',
     model: 'onnx-community/whisper-base',
-    transcribeStatus: ''   // '', 'pending', 'working: ...', 'done: ...', 'error: ...'
+    transcribeStatus: '',  // '', 'pending', 'working: ...', 'done: ...', 'error: ...'
+    transcribeText: ''
   };
 
   // ---- receive discoveries from the MAIN-world interceptor ------------------
@@ -232,7 +233,8 @@
     downloadText(msg.text || '', name + '.txt', 'text/plain');
     var cues = T.whisperChunksToCues(msg.chunks, msg.durationMs);
     if (cues.length) downloadText(Vtt.toSrt(cues), name + '.srt', 'application/x-subrip');
-    state.transcribeStatus = 'done: ' + (msg.text || '').length + ' 字符，' + cues.length + ' 条时间轴';
+    state.transcribeText = msg.text || '';
+    state.transcribeStatus = 'done: ' + state.transcribeText.length + ' 字符，' + cues.length + ' 条时间轴';
   }
 
   function stopAudio() {
@@ -277,7 +279,8 @@
         masters: Object.keys(state.masterPlaylists).length,
         vttSegments: Object.keys(state.vttSegments).length,
         recording: state.recording,
-        transcribeStatus: state.transcribeStatus
+        transcribeStatus: state.transcribeStatus,
+        transcribeText: state.transcribeText
       });
       return true;
     }
