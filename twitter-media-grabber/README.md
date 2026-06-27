@@ -9,7 +9,9 @@ browser), saving the transcript to disk as `.txt` + `.srt`.
 Two transcription modes:
 
 - **Record → transcribe:** record a clip, then transcribe the whole thing on
-  stop.
+  stop. Long recordings are decoded straight to 16 kHz mono and transcribed in
+  bounded, overlapping segments so memory stays low (no more silent crashes on
+  30+ min clips) and progress updates keep coming.
 - **Live (real-time) transcription:** text appears every few seconds *while the
   video plays* — no caption track required, so it effectively **generates
   subtitles for any video that has none**. Stop to save `.txt` + `.srt`.

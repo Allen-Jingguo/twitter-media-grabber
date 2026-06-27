@@ -173,7 +173,12 @@ async function detectLanguage(asr, pcm) {
   const langToId = gc && gc.lang_to_id;
   const startId = gc && gc.decoder_start_token_id;
   if (!langToId || startId == null || !asr.processor) return null;
-  const { input_features } = await asr.processor(pcm);
+  // Whisper detects the language from a single 30 s window, so only featurize
+  // the first 30 s. On a long clip, running the feature extractor over the whole
+  // recording here is a needless time/memory spike (the model truncates to 30 s
+  // anyway), and on the offscreen renderer that spike can be enough to OOM.
+  const probe = pcm.length > TARGET_RATE * 30 ? pcm.subarray(0, TARGET_RATE * 30) : pcm;
+  const { input_features } = await asr.processor(probe);
   const decoder_input_ids = new Tensor('int64', [BigInt(startId)], [1, 1]);
   const out = await model({ input_features, decoder_input_ids });
   const logits = out && out.logits;
@@ -200,7 +205,19 @@ async function resolveLanguage(asr, pcm, lang) {
 }
 
 async function decodeToPcm16k(bytes) {
-  const ctx = new AudioContext();
+  // Decode straight to 16 kHz. decodeAudioData resamples to the AudioContext's
+  // sample rate, so opening the context at TARGET_RATE makes the decoded buffer
+  // already 16 kHz — roughly 3x smaller than decoding at the device default
+  // (often 48 kHz) and with no second resample pass. For long recordings this is
+  // the difference between the decode fitting in the offscreen renderer and
+  // OOM-crashing it (a crash looks like "no result" to the user, because the
+  // dead renderer never sends a reply back).
+  let ctx;
+  try {
+    ctx = new AudioContext({ sampleRate: TARGET_RATE });
+  } catch (e) {
+    ctx = new AudioContext(); // some engines reject a forced rate; resample below
+  }
   try {
     const audioBuf = await ctx.decodeAudioData(bytes.buffer);
     const channels = [];
@@ -208,7 +225,11 @@ async function decodeToPcm16k(bytes) {
       channels.push(audioBuf.getChannelData(c));
     }
     const mono = T.mixdownChannels(channels);
-    return T.resampleLinear(mono, audioBuf.sampleRate, TARGET_RATE);
+    // mixdownChannels already returns a fresh buffer, so when the decode landed
+    // exactly on TARGET_RATE we hand it back without an extra full-length copy.
+    return audioBuf.sampleRate === TARGET_RATE
+      ? mono
+      : T.resampleLinear(mono, audioBuf.sampleRate, TARGET_RATE);
   } finally {
     ctx.close().catch(() => {});
   }
@@ -219,7 +240,10 @@ async function decodeToPcm16k(bytes) {
 // real progress (otherwise a long clip looks frozen for minutes), and on the
 // WASM fallback keeps each call tractable. Segments overlap slightly so a word
 // straddling a boundary survives; the overlap is then deduped by cursor.
-const BATCH_SEGMENT_SEC = 300; // 5 min per inference call
+const BATCH_SEGMENT_SEC = 120; // audio per inference call — short enough to keep
+                               // the per-call working set small and to emit a
+                               // progress update every couple of minutes so a
+                               // slow-but-alive run doesn't look frozen/crashed.
 const BATCH_OVERLAP_SEC = 1;   // shared audio between consecutive segments
 
 async function transcribe(msg) {
@@ -249,6 +273,7 @@ async function transcribe(msg) {
     const allChunks = [];
     const textParts = [];
     let cursorSec = 0;
+    let segError = '';
 
     for (let off = 0; off < pcm.length; off += segSamples) {
       const end = Math.min(pcm.length, off + segSamples + overlapSamples);
@@ -267,7 +292,16 @@ async function transcribe(msg) {
         num_beams: beams
       };
       if (language) opts.language = language;
-      const out = await asr(seg, opts);
+      let out;
+      try {
+        out = await asr(seg, opts);
+      } catch (e) {
+        // Keep going on a per-segment failure (e.g. a transient backend hiccup)
+        // so one bad segment doesn't discard an otherwise-complete transcript of
+        // a long recording. Surface the error only if nothing transcribes at all.
+        segError = String((e && e.message) || e);
+        continue;
+      }
 
       // Shift this segment's timestamps onto the absolute timeline and drop any
       // chunk already covered by the previous segment's overlap.
@@ -284,6 +318,10 @@ async function transcribe(msg) {
       const segText = T.collapseRepeats(out.text);
       if (segText) textParts.push(segText);
     }
+
+    // Every segment failed and produced nothing: report the failure rather than
+    // sending back an empty "success".
+    if (segError && !textParts.length && !allChunks.length) throw new Error(segError);
 
     // Belt-and-braces cleanup of any repetition the decoder still produced, so
     // both the .txt (text) and .srt (chunks) are free of hallucination loops.
